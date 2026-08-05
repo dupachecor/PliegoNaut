@@ -7,9 +7,12 @@ import requests
 import websocket
 import threading
 from http.server import HTTPServer, BaseHTTPRequestHandler
+from dotenv import load_dotenv
+load_dotenv()
 from descargador_secop import DescargadorSECOP, cleanup_browsers
 from ocr_marker import OCRExtractor
-from agentes_pliego import crear_equipo_analisis, VeredictoFinal
+from agentes_pliego import crear_equipo_analisis, VeredictoFinal, ReporteLegal, ReporteFinanciero
+from generador_ruta import generar_ruta_presentacion
 
 BACKEND_URL = os.getenv("BACKEND_URL", "http://localhost:3001")
 WORKER_API_KEY = os.getenv("WORKER_API_KEY", "worker-dev-key-change")
@@ -40,7 +43,7 @@ def escuchar_websocket():
             while _running:
                 msg = ws.recv()
                 if msg:
-                    pass  # La recepción en sí ya gatilla el siguiente poll
+                    pass
         except (websocket.WebSocketException, ConnectionError, OSError) as e:
             if _running:
                 print(f"[WS] Desconectado (fallback a polling): {e}")
@@ -54,6 +57,7 @@ def escuchar_websocket():
                     pass
         if _running:
             time.sleep(5)
+
 
 def obtener_tareas_pendientes():
     try:
@@ -70,27 +74,22 @@ def obtener_tareas_pendientes():
         print(f"[!] Error conectando al backend: {e}")
         return []
 
+
 def validar_veredicto(v: VeredictoFinal) -> bool:
-    """Valida que el output del LLM sea consistente antes de enviarlo."""
     if not isinstance(v.viable, bool):
-        print(f"[VALIDACION] 'viable' debe ser bool, no {type(v.viable)}")
         return False
     if not isinstance(v.score_viabilidad, int) or v.score_viabilidad < 0 or v.score_viabilidad > 100:
-        print(f"[VALIDACION] 'score_viabilidad' inválido: {v.score_viabilidad}")
         return False
     if not v.resumen_ejecutivo or len(v.resumen_ejecutivo) < 10:
-        print(f"[VALIDACION] 'resumen_ejecutivo' muy corto o vacío")
         return False
     if v.viable and v.causales_rechazo:
-        print(f"[VALIDACION] viable=True pero hay causales_de_rechazo")
         return False
     if not v.viable and not v.causales_rechazo:
-        print(f"[VALIDACION] viable=False pero no hay causales_de_rechazo")
         return False
     return True
 
 
-def enviar_resultado(task_id: str, resultado_crew):
+def enviar_resultado(task_id: str, resultado_crew, reporte_legal=None, reporte_financiero=None, ruta_presentacion=None, error_msg=None):
     try:
         if isinstance(resultado_crew, str):
             data = json.loads(resultado_crew)
@@ -119,10 +118,15 @@ def enviar_resultado(task_id: str, resultado_crew):
     payload = {
         "status": "VIABLE" if v.viable else "REJECTED",
         "viabilityScore": v.score_viabilidad,
-        "reportLegal": "Generado por Analista Jurídico",
-        "reportFinancial": "Generado por Analista Financiero",
+        "reportLegal": json.dumps(reporte_legal, ensure_ascii=False) if reporte_legal else None,
+        "reportFinancial": json.dumps(reporte_financiero, ensure_ascii=False) if reporte_financiero else None,
         "reportFinal": reporte_final,
+        "presentationRoute": json.dumps(ruta_presentacion, ensure_ascii=False) if ruta_presentacion else None,
     }
+
+    if error_msg:
+        payload["status"] = "ERROR"
+        payload["errorMessage"] = error_msg
 
     try:
         response = requests.patch(
@@ -139,6 +143,7 @@ def enviar_resultado(task_id: str, resultado_crew):
     except requests.exceptions.RequestException as e:
         print(f"[!] Error enviando resultado: {e}")
         return False
+
 
 def procesar_tarea(task: dict):
     print(f"\n{'='*50}")
@@ -173,6 +178,7 @@ def procesar_tarea(task: dict):
                 resumen_ejecutivo="No se pudo descargar o procesar el pliego de condiciones.",
                 causales_rechazo=["No se pudo obtener el documento para análisis."],
             ),
+            error_msg="PDF no descargado o texto no extraído"
         )
         return
 
@@ -201,10 +207,31 @@ def procesar_tarea(task: dict):
 
         equipo = crear_equipo_analisis(texto_pliego, perfil_empresa)
         resultado = equipo.kickoff()
-        enviar_resultado(task['id'], resultado)
+
+        # Extraer reportes intermedios de las tareas
+        reporte_legal = None
+        reporte_financiero = None
+        for task_output in resultado.tasks_output:
+            if hasattr(task_output, 'pydantic') and task_output.pydantic:
+                if isinstance(task_output.pydantic, ReporteLegal):
+                    reporte_legal = task_output.pydantic.model_dump()
+                elif isinstance(task_output.pydantic, ReporteFinanciero):
+                    reporte_financiero = task_output.pydantic.model_dump()
+
+        # Generar ruta de presentación si es viable
+        ruta_presentacion = None
+        if resultado.pydantic and resultado.pydantic.viable:
+            ruta_presentacion = generar_ruta_presentacion(
+                texto_pliego, perfil_empresa, task.get('secopId', ''),
+                task.get('closingDate'), task.get('entity', '')
+            )
+
+        enviar_resultado(task['id'], resultado, reporte_legal, reporte_financiero, ruta_presentacion)
 
     except Exception as e:
         print(f"[!] Error en análisis IA: {e}")
+        import traceback
+        traceback.print_exc()
         enviar_resultado(
             task['id'],
             VeredictoFinal(
@@ -213,7 +240,9 @@ def procesar_tarea(task: dict):
                 resumen_ejecutivo=f"Error durante el análisis automático: {str(e)}",
                 causales_rechazo=["Error en el pipeline de IA."],
             ),
+            error_msg=str(e)
         )
+
 
 def run_worker_loop():
     global _running
@@ -222,11 +251,9 @@ def run_worker_loop():
     print(f"Poll cada {POLL_INTERVAL}s | OCR máx {MAX_OCR_PAGES or 'ilimitado'} páginas")
     print(f"{'*'*60}\n")
 
-    # Hilo WebSocket para notificaciones inmediatas (fallback a polling)
     ws_thread = threading.Thread(target=escuchar_websocket, daemon=True)
     ws_thread.start()
 
-    # Polling inicial rápido, luego cada POLL_INTERVAL
     poll_interval = 5
     while _running:
         tareas = obtener_tareas_pendientes()
@@ -236,16 +263,17 @@ def run_worker_loop():
                 if not _running:
                     break
                 procesar_tarea(task)
-            poll_interval = 5  # Volver rápido si hay más tareas
+            poll_interval = 5
         else:
             sys.stdout.write(f"\r[INFO] Sin tareas. Siguiente poll en {poll_interval}s...")
             sys.stdout.flush()
-            poll_interval = POLL_INTERVAL  # Volver a intervalo normal
+            poll_interval = POLL_INTERVAL
 
         for _ in range(poll_interval):
             if not _running:
                 break
             time.sleep(1)
+
 
 class HealthHandler(BaseHTTPRequestHandler):
     def do_GET(self):
@@ -255,7 +283,7 @@ class HealthHandler(BaseHTTPRequestHandler):
         self.wfile.write(json.dumps({"status": "ok", "service": "worker"}).encode())
 
     def log_message(self, format, *args):
-        pass  # Silenciar logs del health server
+        pass
 
 
 def run_health_server():
@@ -283,6 +311,7 @@ def handle_shutdown(signum, frame):
     _running = False
     cleanup_browsers()
     sys.exit(0)
+
 
 signal.signal(signal.SIGTERM, handle_shutdown)
 signal.signal(signal.SIGINT, handle_shutdown)

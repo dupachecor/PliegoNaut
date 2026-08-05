@@ -1,8 +1,10 @@
 # PliegoNaut
 
-**Plataforma inteligente de analisis y scoring de licitaciones publicas colombianas (SECOP II) mediante agentes de IA.**
+**Plataforma inteligente de analisis y scoring de licitaciones publicas colombianas (SECOP I + II) mediante agentes de IA.**
 
-PliegoNaut automatiza el ciclo completo de identificacion, descarga, analisis y scoring de Pliegos de Condiciones del SECOP II. Combina un escaner de contratos publicos via SODA API con un pipeline de agentes de IA (CrewAI) que simula un equipo de analistas juridicos y financieros, emitiendo un veredicto estructurado y un puntaje de viabilidad para cada licitacion.
+PliegoNaut automatiza el ciclo completo de identificacion, descarga, analisis y scoring de Pliegos de Condiciones del SECOP. Combina un escaner de contratos publicos que consulta tanto SECOP II (via SODA API de datos.gov.co) como SECOP I (Alcaldias y entidades que publican en contratos.gov.co), con un pipeline de agentes de IA (CrewAI) que simula un equipo de analistas juridicos y financieros, emitiendo un veredicto estructurado y un puntaje de viabilidad para cada licitacion.
+
+> **Estado actual de la fuente de datos:** los datasets publicos de datos.gov.co (Socrata) se actualizan una vez al dia (batch ETL de Colombia Compra Eficiente), con un retraso inherente de ~24h entre publicacion en SECOP y disponibilidad en la API. Ver `docs/PLAN_TIEMPO_REAL.md` para el roadmap de mitigacion (pulls incrementales + scraping VORTAL + acuerdo comercial CCE).
 
 ---
 
@@ -17,39 +19,53 @@ PliegoNaut automatiza el ciclo completo de identificacion, descarga, analisis y 
                              |                          |
                              | HTTP (Proxy)              | WebSocket
                              |                          |
-                    +--------+--------------------------+---------+
-                    |                    API                              |
-                    |  - SODA Scanner (SECOP II)                         |
-                    |  - CRON scheduler                                  |
-                    |  - Rate limiting / Auth (API Key + JWT)            |
-                    |  - Prisma ORM (PostgreSQL)                         |
-                    +---------------------------+------------------------+
-                                                 |
-                                    +------------+------------+
-                                    |   PostgreSQL 16        |
-                                    |   (Docker)             |
-                                    +------------------------+
-                                                 |
-                                    +------------+------------+
-                                    |   Python Worker          |
-                                    |   (CrewAI + LLM)        |
-                                    |                         |
-                                    |  Fase B1: PDF Download  |
-                                    |  Fase B2: OCR/Extraccion|
-                                    |  Fase C: Analisis IA    |
-                                    +-------------------------+
++--------+--------------------------+---------+
+                     |                    API                              |
+                     |  - SODA Scanner (SECOP II + SECOP I integrado)     |
+                     |  - Busqueda Manual (dual-query $q + $where)        |
+                     |  - CRON scheduler                                  |
+                     |  - Rate limiting / Auth (API Key + JWT)            |
+                     |  - Prisma ORM (PostgreSQL)                         |
+                     +---------------------------+------------------------+
+                                                  |
+                                     +------------+------------+
+                                     |   PostgreSQL 16        |
+                                     |   (Docker)             |
+                                     +------------------------+
+                                                  |
+                                     +------------+------------+
+                                     |   Python Worker          |
+                                     |   (CrewAI + LLM)        |
+                                     |                         |
+                                     |  Fase B1: PDF Download  |
+                                     |  Fase B2: OCR/Extraccion|
+                                     |  Fase C: Analisis IA    |
+                                     +-------------------------+
 ```
 
 ### Flujo de Datos
 
 ```
-SECOP II API (datos.gov.co)
+Fuentes de datos (datos.gov.co - Socrata API):
+  - SECOP II Procesos      (p6dx-8zbt)  -> procesos de contratacion
+  - SECOP I Procesos       (f789-7hwg)  -> procesos de alcaldias (con fecha de cargue)
+  - SECOP I Integrado      (rpmr-utcd)  -> fallback para convocados de SECOP I
         |
-        | SODA Query (UNSPSC, budget, region)
+        | SODA Query (municipio, departamento, UNSPSC, presupuesto)
         v
   API Server (Node.js/Express)
         |
-        | Prisma batch create
+        |  Busqueda manual: 3 queries combinadas
+        |    Query 1: $q municipio (full-text SECOP II)
+        |    Query 2: $q municipio + dept (SECOP II por departamento)
+        |    Query 3: SECOP I Procesos (f789-7hwg) por departamento
+        |    Query 3c: SECOP Integrado (rpmr-utcd) fallback por municipio
+        |  -> merge + dedup por id_del_proceso
+        |  -> filtro estricto de municipio client-side
+        |  -> calculo isExpired (fecha recepcion + estado + antiguedad)
+        |  -> sort estricto por fecha de publicacion DESC
+        |
+        | Prisma batch create (scanner automatico por empresa)
         v
   PostgreSQL (ContractMatch: PENDING_ANALYSIS)
         |
@@ -85,7 +101,8 @@ Servidor principal que orquesta el sistema. Proporciona endpoints REST y WebSock
 | GET | `/api/companies` | No | Lista todas las empresas registradas |
 | POST | `/api/companies` | API Key | Registra una nueva empresa |
 | GET | `/api/contracts/:companyId` | No | Contratos asociados a una empresa |
-| POST | `/api/trigger-scanner` | API Key | Dispara escaneo manual de SECOP |
+| POST | `/api/trigger-scanner` | API Key | Dispara escaneo automatico de SECOP por empresa |
+| POST | `/api/search` | API Key | Busqueda manual ad-hoc en SECOP (I+II) con filtros |
 | GET | `/api/worker/tasks` | Worker Key | Obtiene tareas pendientes (hasta 5) |
 | PATCH | `/api/worker/tasks/:id/analysis` | Worker Key | Envia resultado del analisis IA |
 | GET | `/api/worker/health` | No | Health check para Docker |
@@ -98,6 +115,34 @@ Servidor principal que orquesta el sistema. Proporciona endpoints REST y WebSock
 - CRON programable (por defecto cada hora) para escaneo SECOP automatico
 - Monitor de tareas estancadas: tasks en estado `PROCESSING` por mas de 1 hora se reinician a `PENDING_ANALYSIS`
 - WebSocket server en `/api/worker/stream` con autenticacion token y heartbeat cada 30s
+
+#### Busqueda Manual (`POST /api/search`)
+
+Busqueda ad-hoc en SECOP (I + II) sin filtro de empresa. Combina 4 queries SODA y fusiona resultados:
+
+| Query | Dataset | Estrategia | Captura |
+|-------|---------|-----------|---------|
+| 1 | `p6dx-8zbt` (SECOP II) | `$q` municipio (full-text) | Entidades/descripciones que mencionan el municipio |
+| 2 | `p6dx-8zbt` (SECOP II) | `$q` municipio + departamento | Procesos del departamento por relevancia |
+| 3 | `f789-7hwg` (SECOP I) | `$where` departamento | Procesos de alcaldias con `fecha_de_cargue_en_el_secop` real |
+| 3c | `rpmr-utcd` (Integrado) | `$where` municipio + Convocado | Fallback para convocados no capturados por Query 3 |
+
+**Post-procesamiento client-side:**
+- Merge + dedup por `id_del_proceso` (SECOP II tiene prioridad)
+- Filtro estricto de municipio (`ciudad_entidad` debe coincidir; elimina falsos positivos como Neiva/Algeciras)
+- Calculo de `isExpired`: fecha de recepcion de ofertas > hoy, estado activo, apertura Abierta, antiguedad < 90 dias (SECOP II) / 540 dias (SECOP I)
+- Sort estricto por `fecha_de_publicacion_del` DESC (recientes primero)
+- Limite de timeout de SODA: 120s (`SODA_API_TIMEOUT`)
+- Manejo de rate-limit de SODA: respuesta 429 con mensaje amigable
+
+**Filtros soportados:**
+- `municipio` + `department` (requiere seleccionar departamento primero en la UI)
+- `minBudget` / `maxBudget`
+- `unspscCodes` (array)
+- `status` (array de estados; default incluye todos)
+- `searchText` (texto libre en descripción)
+
+**Respuesta:** Cada contrato incluye `isExpired`, `isOpen`, `awarded`, `modality`, `source` (`secop_ii` | `secop_integrado`).
 
 ### 2. Frontend (Next.js 15 + React + TypeScript)
 
@@ -113,6 +158,16 @@ Dashboard de usuario para visualizar y gestionar resultados.
 - `AnalyticsSummary` - 4 tarjetas: Total, Viables, En Analisis, Descartadas
 - `ContractsTable` - Tabla con columnas: Entidad/Titulo, Presupuesto, Estado, Score, Acciones
 - `ContractDetailsModal` - Modal con 3 tabs: Resumen Ejecutivo, Analisis Legal, Analisis Financiero
+- `SearchPanel` - Busqueda manual en SECOP (I+II) con filtros por departamento/municipio, presupuesto, texto libre y casilla "Solo no vencidos"
+- `FilterBar` - Filtros laterales (estado, presupuesto, departamento, municipio, UNSPSC) con datos dinamicos de `colombia-territorial`
+
+**Busqueda Manual (SearchPanel):**
+- Selector encadenado Departamento → Municipio (datos oficiales via paquete `colombia-territorial`)
+- Campos: texto libre, presupuesto min/max, departamento, municipio
+- Casilla **"Solo no vencidos"** que filtra client-side por `isExpired !== true`
+- Resultados ordenados estrictamente por fecha de publicacion DESC (recientes primero)
+- Manejo de error de rate-limit de SODA con aviso amigable
+- Cada tarjeta muestra: entidad, titulo, presupuesto, modalidad (SECOP I), estado (Activo/Vencido en verde/rojo), link a SECOP
 
 **Estados visuales:**
 - `En Cola` - Amarillo, pendiente de analisis
@@ -221,11 +276,21 @@ Dos modelos principales:
 | budget | Float | Presupuesto oficial |
 | urlPliego | String | URL del proceso en SECOP |
 | status | String | PENDING_ANALYSIS / PROCESSING / VIABLE / REJECTED |
+| phase | String | Fase del proceso (Presentacion de oferta, etc.) |
+| contractStatus | String | Estado del procedimiento en SECOP (Publicado, Convocado, etc.) |
+| department | String | Departamento de la entidad |
+| region | String | Region |
+| categoryCode | String | Codigo UNSPSC |
+| publishedAt | DateTime? | Fecha de publicacion del proceso |
+| closingDate | DateTime? | Fecha de cierre/recepcion de ofertas |
+| presentationDeadline | DateTime? | Plazo de presentacion |
 | viabilityScore | Int? | Score 0-100 |
 | reportLegal | String? | Reporte legal (JSON) |
 | reportFinancial | String? | Reporte financiero (JSON) |
 | reportFinal | String? | Veredicto final (JSON) |
 | notified | Boolean | Notificacion enviada? |
+
+> **Nota:** La busqueda manual (`/api/search`) retorna campos adicionales efimeros no persistidos: `isExpired`, `isOpen`, `awarded`, `modality`, `source`. El modelo Prisma `ContractMatch` se mantiene para el scanner automatico por empresa y el pipeline de IA.
 
 **Indices:** `@@unique([companyId, secopId])`, `@@index([status])`, `@@index([createdAt])`, `@@index([companyId])`
 
@@ -337,8 +402,16 @@ OLLAMA_MODEL=deepseek-r1:8b
 
 # Frontend
 NEXT_PUBLIC_API_URL=http://localhost:3001
+NEXT_PUBLIC_API_KEY=dev-key-change-in-production
 NEXTAUTH_SECRET=your-secret
 NEXTAUTH_URL=http://localhost:3000
+
+# SECOP / SODA (datos.gov.co)
+SODA_API_URL=https://www.datos.gov.co/resource/p6dx-8zbt.json
+SODA_API_TIMEOUT=120000
+SECOP1_PROCESSES_URL=https://www.datos.gov.co/resource/f789-7hwg.json
+SECOP_INTEGRADO_URL=https://www.datos.gov.co/resource/rpmr-utcd.json
+# SOCRATA_APP_TOKEN=  # opcional, aumenta rate limit (Fase 1 del plan)
 ```
 
 ### Inicio Rapido (Desarrollo)
@@ -600,6 +673,24 @@ PliegoNaut esta disenado para reducir el tiempo de analisis de licitaciones publ
 - Areas financieras que evaluan capacidad economica y riesgo de contratos publicos
 
 **Limitaciones:**
-- El sistema depende de la calidad de los datos publicados en SECOP II
+- El sistema depende de la calidad y oportunidad de los datos publicados en SECOP
+- **Retraso de ~24h**: los datasets publicos de datos.gov.co (Socrata) se actualizan una vez al dia via ETL de Colombia Compra Eficiente. Los procesos publicados "hoy" aparecen en la API "manana". Esto afecta a los procesos de plazo corto (mínima/menor cuantía: 1-2 dias) pero es tolerable para licitaciones públicas (10+ dias legales). Ver `docs/PLAN_TIEMPO_REAL.md` para el roadmap de mitigacion.
+- **SECOP I desactualizado**: el dataset `rpmr-utcd` mantiene procesos en estado "Convocado" que en realidad ya fueron adjudicados. Se mitiga con umbral de antiguedad (540 dias para SECOP I, 90 dias para SECOP II) y uso del dataset `f789-7hwg` (con `fecha_de_cargue_en_el_secop` real) como fuente principal de SECOP I.
+- **No existe API publica en tiempo real de SECOP**: la plataforma transaccional `community.secop.gov.co` (VORTAL) es tiempo real pero no expone API publica (solo HTML+JS con ReCaptcha). Ver `docs/PLAN_TIEMPO_REAL.md`.
+- **Municipios pequeños**: algunos municipios (como Santa María, Huila) publican pocos procesos anuales en SECOP II (~16 en 2026); la alcaldía publica en SECOP I. No es un bug, es la realidad del municipio.
 - El analisis IA es un primer filtro; siempre se recomienda revision legal y financiera profesional
 - marker-pdf requiere GPU con CUDA para rendimiento optimo (fallback a pdfplumber disponible)
+
+---
+
+## Roadmap
+
+El proyecto evoluciona en 3 fases para mitigar el retraso de la fuente de datos. El detalle completo esta en `docs/PLAN_TIEMPO_REAL.md`:
+
+1. **Fase 1 (bajo riesgo):** mejoras en datos.gov.co — pulls incrementales cada hora, combinacion de 3 datasets, App Token Socrata.
+2. **Fase 2 (alto riesgo):** scraper de VORTAL (`community.secop.gov.co`) para deteccion en tiempo real + descarga automatica de pliegos, con fallback a datos.gov.co.
+3. **Fase 3 (largo plazo):** acuerdo comercial con CCE/VORTAL para acceso a API transaccional oficial.
+
+## Documentacion adicional
+
+- `docs/PLAN_TIEMPO_REAL.md` — Plan detallado del roadmap híbrido (datos.gov.co + scraping VORTAL + acuerdo CCE), dividido en fases, sub-fases, verificaciones y areas de mejora.

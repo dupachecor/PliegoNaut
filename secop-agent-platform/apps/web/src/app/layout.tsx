@@ -1,13 +1,23 @@
 import type { Metadata } from "next";
-import { Inter } from "next/font/google";
+import { Inter, Space_Grotesk } from "next/font/google";
 import "./globals.css";
 import { Providers } from "./providers";
 
-const inter = Inter({ subsets: ["latin"] });
+const inter = Inter({
+  subsets: ["latin"],
+  variable: "--font-inter",
+  display: "swap",
+});
+
+const spaceGrotesk = Space_Grotesk({
+  subsets: ["latin"],
+  variable: "--font-grotesk",
+  display: "swap",
+});
 
 export const metadata: Metadata = {
-  title: "PliegoNaut - Inteligencia Artificial para Licitaciones",
-  description: "Plataforma automatizada para buscar, analizar y viabilizar contratos del SECOP en tiempo real.",
+  title: "PliegoNaut - IA para Licitaciones Públicas",
+  description: "Plataforma de inteligencia artificial para buscar, analizar y ganar contratos del SECOP II en Colombia.",
 };
 
 export default function RootLayout({
@@ -16,10 +26,10 @@ export default function RootLayout({
   children: React.ReactNode;
 }>) {
   return (
-    <html lang="es">
-      <body className={inter.className}>
+    <html lang="es" className={`${inter.variable} ${spaceGrotesk.variable}`}>
+      <body className="font-sans bg-background text-foreground antialiased">
         <Providers>
-          <div className="min-h-screen bg-slate-50 font-sans">
+          <div className="min-h-screen bg-background">
             <main className="w-full">
               {children}
             </main>

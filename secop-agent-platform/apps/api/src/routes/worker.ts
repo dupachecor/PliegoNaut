@@ -6,30 +6,34 @@ import { validate, analysisSchema } from '../middleware/validate';
 
 const router = Router();
 
-// Worker task polling
+// Worker task polling - atomic claim
 router.get('/api/worker/tasks', requireWorkerKey, async (_req, res) => {
-  const pendingTasks = await prisma.contractMatch.findMany({
-    where: { status: "PENDING_ANALYSIS" },
-    include: { company: true },
-    take: 5,
-    orderBy: { createdAt: 'asc' },
+  // Use raw transaction to atomically claim tasks
+  const tasks = await prisma.$transaction(async (tx) => {
+    const pending = await tx.contractMatch.findMany({
+      where: { status: "PENDING_ANALYSIS" },
+      include: { company: true },
+      take: 5,
+      orderBy: [{ matchScore: 'desc' }, { createdAt: 'asc' }],
+    });
+
+    if (pending.length > 0) {
+      await tx.contractMatch.updateMany({
+        where: { id: { in: pending.map(t => t.id) }, status: "PENDING_ANALYSIS" },
+        data: { status: "PROCESSING" },
+      });
+    }
+
+    return pending;
   });
 
-  const ids = pendingTasks.map((t) => t.id);
-  if (ids.length > 0) {
-    await prisma.contractMatch.updateMany({
-      where: { id: { in: ids }, status: "PENDING_ANALYSIS" },
-      data: { status: "PROCESSING" },
-    });
-  }
-
-  res.json(pendingTasks);
+  res.json(tasks);
 });
 
 // Worker analysis submission
 router.patch('/api/worker/tasks/:id/analysis', requireWorkerKey, validate(analysisSchema), async (req, res) => {
   const { id } = req.params;
-  const { status, viabilityScore, reportLegal, reportFinancial, reportFinal } = req.body;
+  const { status, viabilityScore, reportLegal, reportFinancial, reportFinal, presentationRoute, errorMessage } = req.body;
 
   const existing = await prisma.contractMatch.findUnique({ where: { id } });
   if (!existing) {
@@ -41,13 +45,22 @@ router.patch('/api/worker/tasks/:id/analysis', requireWorkerKey, validate(analys
 
   const updated = await prisma.contractMatch.update({
     where: { id },
-    data: { status, viabilityScore, reportLegal, reportFinancial, reportFinal },
+    data: {
+      status,
+      viabilityScore,
+      reportLegal,
+      reportFinancial,
+      reportFinal,
+      presentationRoute,
+      errorMessage,
+      retryCount: { increment: errorMessage ? 1 : 0 },
+    },
   });
 
   res.json(updated);
 });
 
-// Worker health check (for Docker compose health checks)
+// Worker health check
 router.get('/api/worker/health', async (_req, res) => {
   res.json({ status: 'ok', service: 'api' });
 });

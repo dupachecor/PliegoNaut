@@ -1,10 +1,22 @@
 datasource db {
-  provider = "postgresql"
+  provider = "sqlite"
   url      = env("DATABASE_URL")
 }
 
 generator client {
   provider = "prisma-client-js"
+}
+
+model User {
+  id           String    @id @default(uuid())
+  email        String    @unique
+  name         String
+  passwordHash String
+  role         String    @default("user")
+  companyId    String?
+  company      Company?  @relation(fields: [companyId], references: [id], onDelete: SetNull)
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
 }
 
 model Company {
@@ -19,31 +31,65 @@ model Company {
   minBudget      Float           @default(0)
   maxBudget      Float           @default(9999999999)
   certifications String          @default("[]")
+  description    String          @default("")
+  website        String          @default("")
   contracts      ContractMatch[]
+  users          User[]
   createdAt      DateTime        @default(now())
   updatedAt      DateTime        @updatedAt
 }
 
 model ContractMatch {
-  id              String   @id @default(uuid())
-  companyId       String
-  company         Company  @relation(fields: [companyId], references: [id], onDelete: Cascade)
-  secopId         String
-  entity          String
-  title           String
-  budget          Float
-  urlPliego       String
-  status          String   @default("PENDING_ANALYSIS")
-  viabilityScore  Int?
-  reportLegal     String?
-  reportFinancial String?
-  reportFinal     String?
-  notified        Boolean  @default(false)
-  createdAt       DateTime @default(now())
-  updatedAt       DateTime @updatedAt
+  id                    String    @id @default(uuid())
+  companyId             String
+  company               Company   @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  secopId               String
+  entity                String
+  title                 String
+  budget                Float
+  urlPliego             String
+  status                String    @default("PENDING_ANALYSIS")
+  phase                 String    @default("")
+  contractStatus        String    @default("")
+  department            String    @default("")
+  region                String    @default("")
+  categoryCode          String    @default("")
+  categoryName          String    @default("")
+  contactName           String    @default("")
+  contactPhone          String    @default("")
+  contactEmail          String    @default("")
+  estimatedDuration     String    @default("")
+  publishedAt           DateTime?
+  closingDate           DateTime?
+  presentationDeadline  DateTime?
+  matchScore            Int       @default(0)
+  viabilityScore        Int?
+  presentationRoute     String?
+  reportLegal           String?
+  reportFinancial       String?
+  reportFinal           String?
+  errorMessage          String    @default("")
+  retryCount            Int       @default(0)
+  rawSodaData           String    @default("")
+  notified              Boolean   @default(false)
+  createdAt             DateTime  @default(now())
+  updatedAt             DateTime  @updatedAt
 
   @@unique([companyId, secopId])
   @@index([status])
   @@index([createdAt])
   @@index([companyId])
+  @@index([closingDate])
+  @@index([matchScore])
+}
+
+model ScanRun {
+  id            String   @id @default(uuid())
+  startedAt     DateTime @default(now())
+  completedAt   DateTime?
+  status        String   @default("RUNNING")
+  contractsFound Int     @default(0)
+  companiesScanned Int   @default(0)
+  errors        String   @default("")
+  triggeredBy   String   @default("cron")
 }

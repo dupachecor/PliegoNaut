@@ -1,5 +1,5 @@
 import { Skeleton } from "@/components/ui/skeleton";
-import { Building2, CheckCircle2 } from "lucide-react";
+import { Building2, CheckCircle2, ChevronRight } from "lucide-react";
 import type { Company } from "@pliegonaut/types";
 
 interface Props {
@@ -12,18 +12,18 @@ interface Props {
 export function CompanySelector({ companies, selectedId, onSelect, isLoading }: Props) {
   if (isLoading) {
     return (
-      <div className="bg-white p-5 rounded-xl border border-slate-200 shadow-sm space-y-4">
+      <div className="bg-card p-5 rounded-xl border border-border shadow-sm space-y-4">
         <Skeleton className="h-4 w-32 mb-2" />
-        <Skeleton className="h-12 w-full rounded-lg" />
-        <Skeleton className="h-12 w-full rounded-lg" />
+        <Skeleton className="h-14 w-full rounded-lg" />
+        <Skeleton className="h-14 w-full rounded-lg" />
       </div>
     );
   }
 
   return (
-    <div className="bg-white p-5 rounded-xl border border-slate-200 shadow-sm">
-      <h3 className="font-semibold text-sm text-slate-900 mb-3 flex items-center gap-2">
-        <Building2 className="h-4 w-4 text-indigo-500" />
+    <div className="bg-card p-5 rounded-xl border border-border shadow-sm">
+      <h3 className="font-semibold text-sm mb-4 flex items-center gap-2">
+        <Building2 className="h-4 w-4 text-primary" />
         Empresas Registradas
       </h3>
       <div className="space-y-2">
@@ -31,18 +31,27 @@ export function CompanySelector({ companies, selectedId, onSelect, isLoading }: 
           <button
             key={company.id}
             onClick={() => onSelect(company.id)}
-            className={`w-full text-left px-4 py-3 rounded-lg text-sm transition-all border ${
-              selectedId === company.id 
-                ? "bg-indigo-50 border-indigo-200 text-indigo-800 font-medium shadow-sm" 
-                : "bg-white border-slate-100 text-slate-600 hover:bg-slate-50 hover:border-slate-200"
+            className={`w-full text-left px-4 py-3.5 rounded-lg text-sm transition-all border group ${
+              selectedId === company.id
+                ? "bg-primary/5 border-primary/20 text-primary font-medium shadow-sm"
+                : "bg-transparent border-transparent text-muted-foreground hover:bg-muted/50 hover:text-foreground"
             }`}
           >
             <div className="flex items-center justify-between">
-              <div className="truncate">
-                <p className="truncate">{company.name}</p>
-                <p className="text-xs opacity-70 font-normal mt-0.5">NIT: {company.nit}</p>
+              <div className="truncate flex-1">
+                <p className="truncate font-medium">{company.name}</p>
+                <p className="text-xs opacity-70 font-normal mt-0.5">
+                  NIT: {company.nit}
+                </p>
+                <p className="text-xs opacity-50 font-normal mt-0.5">
+                  {company.unspscCodes?.split(',').length || 0} códigos UNSPSC
+                </p>
               </div>
-              {selectedId === company.id && <CheckCircle2 className="h-4 w-4 text-indigo-600 flex-shrink-0" />}
+              {selectedId === company.id ? (
+                <CheckCircle2 className="h-4 w-4 text-primary flex-shrink-0 ml-2" />
+              ) : (
+                <ChevronRight className="h-4 w-4 opacity-0 group-hover:opacity-50 flex-shrink-0 ml-2 transition-opacity" />
+              )}
             </div>
           </button>
         ))}

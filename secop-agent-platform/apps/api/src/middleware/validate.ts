@@ -24,14 +24,28 @@ export const companySchema = z.object({
   regions: z.string().optional().default(''),
   emails: z.string().optional().default(''),
   certifications: z.string().optional().default('[]'),
+  description: z.string().optional().default(''),
+  website: z.string().optional().default(''),
   minBudget: z.number().nonnegative().optional().default(0),
   maxBudget: z.number().nonnegative().optional().default(9999999999),
 })
 
 export const analysisSchema = z.object({
-  status: z.enum(['VIABLE', 'REJECTED']),
+  status: z.enum(['VIABLE', 'REJECTED', 'ERROR']),
   viabilityScore: z.number().int().min(0).max(100),
   reportLegal: z.string().optional(),
   reportFinancial: z.string().optional(),
   reportFinal: z.string().optional(),
+  presentationRoute: z.string().optional(),
+  errorMessage: z.string().optional(),
+})
+
+export const searchSchema = z.object({
+  unspscCodes: z.array(z.string()).optional(),
+  minBudget: z.number().optional(),
+  maxBudget: z.number().optional(),
+  department: z.string().optional(),
+  municipio: z.string().optional(),
+  status: z.array(z.string()).optional(),
+  searchText: z.string().optional(),
 })
