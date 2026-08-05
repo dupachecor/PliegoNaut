@@ -1,0 +1,15 @@
+{
+  "name": "secop-agent-platform",
+  "version": "1.0.0",
+  "private": true,
+  "workspaces": [
+    "apps/api",
+    "apps/web",
+    "packages/database",
+    "packages/types"
+  ],
+  "scripts": {
+    "build": "npm run build --workspaces --if-present",
+    "dev": "npm run dev --workspaces"
+  }
+}

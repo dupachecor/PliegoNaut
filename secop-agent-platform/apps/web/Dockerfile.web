@@ -1,0 +1,30 @@
+FROM node:20-alpine AS builder
+WORKDIR /app
+
+# Primero copiar los archivos de definición del monorepo
+COPY package.json package-lock.json* ./
+COPY apps/web/package.json ./apps/web/
+COPY packages/types/package.json ./packages/types/
+COPY packages/database/package.json ./packages/database/
+COPY apps/api/package.json ./apps/api/
+
+# Instalar dependencias a nivel de workspace
+RUN npm install
+
+# Copiar el código fuente
+COPY . .
+
+# Construir Next.js dentro del workspace
+WORKDIR /app/apps/web
+RUN npm run build
+
+FROM node:20-alpine AS runner
+WORKDIR /app
+ENV NODE_ENV=production
+COPY --from=builder /app/apps/web/.next ./.next
+COPY --from=builder /app/node_modules ./node_modules
+COPY --from=builder /app/apps/web/node_modules ./apps/web/node_modules
+COPY --from=builder /app/apps/web/package.json ./
+COPY --from=builder /app/apps/web/next.config.js ./
+EXPOSE 3000
+CMD ["npm", "start"]

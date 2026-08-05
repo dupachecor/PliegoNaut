@@ -1,0 +1,22 @@
+{
+  "name": "@pliegonaut/database",
+  "version": "1.0.0",
+  "private": true,
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "dependencies": {
+    "@prisma/client": "^5.10.0",
+    "pg": "^8.13.0"
+  },
+  "devDependencies": {
+    "prisma": "^5.10.0",
+    "typescript": "^5.0.0"
+  },
+  "scripts": {
+    "build": "tsc index.ts --outDir dist --declaration",
+    "generate": "prisma generate",
+    "push": "prisma db push",
+    "migrate": "prisma migrate dev",
+    "deploy": "prisma migrate deploy"
+  }
+}

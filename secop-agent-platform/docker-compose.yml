@@ -1,0 +1,70 @@
+version: "3.8"
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: pliegonaut
+      POSTGRES_PASSWORD: pliegonaut
+      POSTGRES_DB: pliegonaut
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U pliegonaut"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "3001:3001"
+    env_file: .env
+    environment:
+      - NODE_ENV=production
+      - DATABASE_URL=postgresql://pliegonaut:pliegonaut@postgres:5432/pliegonaut?schema=public
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+
+  web:
+    build:
+      context: .
+      dockerfile: apps/web/Dockerfile.web
+    ports:
+      - "3000:3000"
+    env_file: .env
+    environment:
+      - NEXT_PUBLIC_API_URL=http://api:3001
+      - PORT=3000
+    depends_on:
+      - api
+    restart: unless-stopped
+
+  worker:
+    build:
+      context: ./apps/worker-python
+      dockerfile: Dockerfile.worker
+    environment:
+      - BACKEND_URL=http://api:3001
+      - WORKER_API_KEY=${WORKER_API_KEY:-worker-dev-key-change}
+      - LLM_PROVIDER=${LLM_PROVIDER:-ollama}
+      - OLLAMA_BASE_URL=${OLLAMA_BASE_URL:-http://host.docker.internal:11434}
+      - OLLAMA_MODEL=${OLLAMA_MODEL:-deepseek-r1:8b}
+      - MAX_OCR_PAGES=${MAX_OCR_PAGES:-50}
+      - POLL_INTERVAL=5
+    depends_on:
+      - api
+    restart: unless-stopped
+    volumes:
+      - worker_data:/app/documentos
+
+volumes:
+  pgdata:
+  worker_data:

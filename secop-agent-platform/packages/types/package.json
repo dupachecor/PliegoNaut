@@ -1,0 +1,13 @@
+{
+  "name": "@pliegonaut/types",
+  "version": "1.0.0",
+  "private": true,
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "devDependencies": {
+    "typescript": "^5.3.3"
+  },
+  "scripts": {
+    "build": "tsc index.ts --outDir dist --declaration"
+  }
+}

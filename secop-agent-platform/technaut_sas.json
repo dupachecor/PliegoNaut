@@ -1,0 +1,12 @@
+{
+  "name": "TechNaut SAS",
+  "nit": "900123456",
+  "workingCapital": 500000000,
+  "liquidity": 2.5,
+  "unspscCodes": "81111800,43211500,72222300,43222600",
+  "regions": "Cundinamarca,Bogotá D.C.,Antioquia,Valle del Cauca",
+  "emails": "info@technaut.com,licitaciones@technaut.com,notificaciones@technaut.com",
+  "minBudget": 0,
+  "maxBudget": 5000000000,
+  "certifications": "[\"ISO 9001:2015\",\"ISO 27001:2022\",\"ISO 37001:2016\",\"Registro Único de Proponentes - Cámara de Comercio de Bogotá\",\"Habeas Data\",\"Seguridad Social vigente\",\"Paz y Salvo DIAN\",\"Paz y Salvo ICA\",\"Paz y Salvo Impuesto Nacional al Consumo\"]"
+}

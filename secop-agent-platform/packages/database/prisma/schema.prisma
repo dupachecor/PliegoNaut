@@ -1,0 +1,49 @@
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+model Company {
+  id             String          @id @default(uuid())
+  name           String
+  nit            String          @unique
+  workingCapital Float
+  liquidity      Float
+  unspscCodes    String
+  regions        String
+  emails         String
+  minBudget      Float           @default(0)
+  maxBudget      Float           @default(9999999999)
+  certifications String          @default("[]")
+  contracts      ContractMatch[]
+  createdAt      DateTime        @default(now())
+  updatedAt      DateTime        @updatedAt
+}
+
+model ContractMatch {
+  id              String   @id @default(uuid())
+  companyId       String
+  company         Company  @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  secopId         String
+  entity          String
+  title           String
+  budget          Float
+  urlPliego       String
+  status          String   @default("PENDING_ANALYSIS")
+  viabilityScore  Int?
+  reportLegal     String?
+  reportFinancial String?
+  reportFinal     String?
+  notified        Boolean  @default(false)
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  @@unique([companyId, secopId])
+  @@index([status])
+  @@index([createdAt])
+  @@index([companyId])
+}
