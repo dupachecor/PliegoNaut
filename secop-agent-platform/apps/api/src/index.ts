@@ -4,6 +4,8 @@ import helmet from 'helmet';
 import rateLimit from 'express-rate-limit';
 import { startSodaIngestCron } from './cron/sodaIngest';
 import { startStuckTasksMonitor } from './cron/stuckTasks';
+import { startVortalScraperCron } from './cron/vortalScraper';
+import { VORTAL_SCRAPER_ENABLED } from './config/vortal';
 
 import pinoHttp from 'pino-http';
 
@@ -58,6 +60,11 @@ startSodaIngestCron();
 
 // Monitor de tareas estancadas
 startStuckTasksMonitor();
+
+// Scraper VORTAL (Fase 2.1): solo si está habilitado (requiere sesión bootstrapada)
+if (VORTAL_SCRAPER_ENABLED) {
+  startVortalScraperCron();
+}
 
 // === MANEJO DE ERRORES GLOBAL ===
 app.use((err: Error, _req: express.Request, res: express.Response, _next: express.NextFunction) => {

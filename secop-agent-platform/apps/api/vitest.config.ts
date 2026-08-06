@@ -7,10 +7,7 @@ export default defineConfig({
     environment: 'node',
     setupFiles: ['./src/__tests__/setup.ts'],
     alias: {
-      '@pliegonaut/database': {
-        find: /.*/,
-        replacement: databasePath,
-      },
+      '@pliegonaut/database': databasePath,
     },
   },
   define: {

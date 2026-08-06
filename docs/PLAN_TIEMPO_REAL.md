@@ -230,10 +230,22 @@ model IngestLog {
 
 **Qué:** Cron cada 15 min que navega la lista pública de avisos y detecta nuevos procesos.
 
+> **Estado de implementación (2026-08-06):** ✅ implementado y verificado en vivo contra VORTAL.
+> - `apps/api/src/services/vortalScraperService.ts` — navega la búsqueda con ventana de `newProcessWindowHours` (2h),
+>   hace click en `#btnSearchButton`, extrae la grilla `VortalGrid` (noticeUID desde el onclick del link "Detalle"),
+>   filtra estado `Publicado` + ventana, dedup por `vortalNoticeUid` y persiste en `ContractMatch`
+>   (`source='vortal_scraped'`, `matchScore=90`, `PENDING_ANALYSIS`) para cada empresa.
+> - `apps/api/src/cron/vortalScraper.ts` — cron `*/15 * * * *` (guarda por env `VORTAL_CRON_SCHEDULE`), activable con
+>   `VORTAL_SCRAPER_ENABLED=true`.
+> - Registra cada ejecución en `ScrapeSession` (OK / FAILED / BLOCKED). Sesión persistida en `storage/vortal/user_data`
+>   (bootstrap: `VORTAL_HEADFUL=true` resuelve el captcha 1 vez).
+> - Verificado en vivo: 2 procesos nuevos persistidos con fechas correctas, dedup en re-ejecución (0 duplicados),
+>   ruta BLOCKED sin sesión válida.
+
 **Archivos:**
 - `apps/api/src/services/vortalScraperService.ts` (nuevo)
 - `apps/api/src/cron/vortalScraper.ts` (nuevo)
-- `apps/api/src/config/vortal.ts` (selectores parametrizados)
+- `apps/api/src/config/vortal.ts` (selectores parametrizados + ventana + sesión + chromium)
 
 **Pila técnica:**
 - Playwright (más estable que Puppeteer para SPAs)
@@ -254,7 +266,20 @@ model IngestLog {
 
 ### 2.2 Sub-fase: Descarga de pliegos
 
-**Qué:** Para cada proceso nuevo, descargar los documentos (pliego de condiciones, addendos).
+**Qué:** Para cada proceso nuevo, descargar los documentos (pliego de condiciones, addendos, avisos, anexos).
+
+> **Estado de implementación (2026-08-06):** ✅ implementado y verificado en vivo contra VORTAL.
+> - Mecanismo descubierto: el detalle (`OpportunityDetail/Index?noticeUID=…`) lista TODOS los documentos;
+>   cada "Descargar" llama a `DownloadFile?documentFileId=<id>&mkey=<sesión>`, que responde un redirect vía JS a
+>   `/Public/Archive/RetrieveFile/Index?DocumentId=<id>`, que devuelve el PDF.
+> - `apps/api/src/services/vortalDocumentsService.ts` — extrae TODOS los refs del detalle (con `inferDocumentType`
+>   por nombre: pliego/addendo/aviso/anexo), descarga con Node fetch + cookies del navegador (pool de
+>   `maxConcurrentDownloads`=5, timeout `downloadTimeoutMs`=120s, máx `maxDocSizeMB`=50MB), valida `%PDF-`,
+>   guarda en `storage/pliegos/{secopId}/{docId}.pdf` y registra en `ProcessDocument` (checksum SHA256, upsert dedup).
+> - `apps/api/src/services/documentsStorageService.ts` — `sha256`, `looksLikePdf`, `buildStoragePath`, `savePdf`, `exceedsMaxSize`.
+> - Integrado en `runVortalScrape`: tras persistir nuevos, descarga sus documentos y actualiza `ScrapeSession.newDocuments`.
+> - Verificado en vivo: proceso con 7 docs → 7/7; otro con 10 (una duplicada deduped) → 10/10; otro con 3 → 3/3;
+>   total 24 documentos en una ejecución; re-ejecución sin duplicados (upsert por `@@unique`).
 
 **Archivos:**
 - `apps/api/src/services/vortalDocumentsService.ts` (nuevo)

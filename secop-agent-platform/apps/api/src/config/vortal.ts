@@ -3,12 +3,17 @@
 // La UI de VORTAL es una SPA Angular que puede cambiar: si se rompe el scraper,
 // este archivo es el ÚNICO lugar que se debe tocar (no tocar la lógica).
 
+import fs from 'fs';
+import os from 'os';
+import path from 'path';
+
 export interface VortalSelectorSet {
   tableRow: string[];      // filas de la tabla de avisos
   resultGrid: string[];    // tabla de resultados (VortalGrid)
   lastModifiedGrid: string[]; // tabla "ÚLTIMAS MODIFICACIONES" (panel lateral)
   noticeLink: string[];    // enlaces al detalle (contienen noticeUID)
   nextPage: string[];      // paginación
+  searchButton: string[];   // botón "Buscar" del formulario
   recaptchaIframe: string[]; // iframes de ReCaptcha
   captchaField: string[];  // contenedores de captcha
   loginInput: string[];    // inputs de login (detección de sesión)
@@ -108,6 +113,11 @@ export const VORTAL: VortalConfig = {
       "button:has-text('Descargar')",
       "a[href*='GetDocument']",
     ],
+    searchButton: [
+      "#btnSearchButton",
+      "input#btnSearchButton",
+      "input[value='Buscar']",
+    ],
   },
   rateLimit: {
     minDelayMs: 30000,
@@ -127,17 +137,55 @@ export const VORTAL: VortalConfig = {
 
 export const VORTAL_BASE_URL = VORTAL.baseUrl;
 
+// ===== Runtime / scraper (2.1) =====
+export const VORTAL_CRON_SCHEDULE = process.env.VORTAL_CRON_SCHEDULE || '*/15 * * * *';
+export const VORTAL_SCRAPER_ENABLED = process.env.VORTAL_SCRAPER_ENABLED === 'true';
+export const VORTAL_HEADFUL = process.env.VORTAL_HEADFUL === 'true';
+export const VORTAL_USER_DATA_DIR =
+  process.env.VORTAL_USER_DATA_DIR || path.resolve(process.cwd(), 'storage/vortal/user_data');
+export const VORTAL_DOCS_DIR =
+  process.env.VORTAL_DOCS_DIR || path.resolve(process.cwd(), 'storage/pliegos');
+export const VORTAL_MANUAL_SOLVE_TIMEOUT_MS = parseInt(
+  process.env.MANUAL_SOLVE_TIMEOUT_MS || '180000',
+  10,
+);
+
+function pad(n: number): string {
+  return String(n).padStart(2, '0');
+}
+
+// VORTAL interpreta las fechas en hora de Bogotá (UTC-5). La máquina local está en ese huso,
+// así que los componentes de hora local de `new Date()` son directamente correctos.
+function fmtVortalDate(d: Date): string {
+  return `${pad(d.getMonth() + 1)}/${pad(d.getDate())}/${d.getFullYear()} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+}
+
 export function noticesListUrl(): string {
   // Búsqueda con ventana amplia desde inicio de año (los params los expone la
   // propia grilla en sus onclick de ordenación: PublishDateFrom/To, OrderParam).
   const now = new Date();
-  const pad = (n: number) => String(n).padStart(2, '0');
-  const fmt = (d: Date) => `${pad(d.getMonth() + 1)}/${pad(d.getDate())}/${d.getFullYear()} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
   const params = new URLSearchParams({
     isLV: '0',
     RecordsPerPage: '10',
     PublishDateFrom: `01/01/${now.getFullYear()} 00:00:00`,
-    PublishDateTo: fmt(now),
+    PublishDateTo: fmtVortalDate(now),
+    OrderParam: 'RequestOnlinePublishingDateDESC',
+    SearchExecuted: 'True',
+  });
+  return `${VORTAL.baseUrl}${VORTAL.noticesPath}?${params.toString()}`;
+}
+
+// Búsqueda restringida a la ventana de "proceso nuevo" (default 2 horas).
+// El propio servidor filtra por fecha de publicación: el grid solo devuelve
+// lo publicado en esas horas, ordenado por fecha DESC.
+export function vortalSearchUrl(windowHours: number = VORTAL.newProcessWindowHours): string {
+  const now = new Date();
+  const from = new Date(now.getTime() - windowHours * 60 * 60 * 1000);
+  const params = new URLSearchParams({
+    isLV: '0',
+    RecordsPerPage: '10',
+    PublishDateFrom: fmtVortalDate(from),
+    PublishDateTo: fmtVortalDate(now),
     OrderParam: 'RequestOnlinePublishingDateDESC',
     SearchExecuted: 'True',
   });
@@ -145,7 +193,41 @@ export function noticesListUrl(): string {
 }
 
 export function noticeDetailUrl(noticeUid: string): string {
-  const params = new URLSearchParams(VORTAL.defaultQuery);
-  params.set('noticeUID', noticeUid);
-  return `${VORTAL.baseUrl}${VORTAL.noticesPath}?${params.toString()}`;
+  const params = new URLSearchParams({
+    noticeUID: noticeUid,
+    isFromPublicArea: 'True',
+    isModal: 'true',
+    asPopupView: 'true',
+  });
+  return `${VORTAL.baseUrl}/Public/Tendering/OpportunityDetail/Index?${params.toString()}`;
+}
+
+// ===== Resolución del binario de Chromium =====
+// Prioridad: VORTAL_CHROME_PATH > CHROME_PATH > PUPPETEER_EXECUTABLE_PATH >
+// caché de ms-playwright (el que ya usa el worker).
+export function resolveChromePath(explicit?: string): string | undefined {
+  const candidates: string[] = [];
+  if (explicit) candidates.push(explicit);
+  if (process.env.VORTAL_CHROME_PATH) candidates.push(process.env.VORTAL_CHROME_PATH);
+  if (process.env.CHROME_PATH) candidates.push(process.env.CHROME_PATH);
+  if (process.env.PUPPETEER_EXECUTABLE_PATH) candidates.push(process.env.PUPPETEER_EXECUTABLE_PATH);
+
+  try {
+    const pwDir = path.join(os.homedir(), '.cache/ms-playwright');
+    if (fs.existsSync(pwDir)) {
+      const chromiumDirs = fs.readdirSync(pwDir).filter((d) => d.startsWith('chromium')).sort();
+      for (const dir of chromiumDirs) {
+        const base = path.join(pwDir, dir);
+        for (const sub of fs.readdirSync(base)) {
+          const bin = path.join(base, sub, 'chrome');
+          if (fs.existsSync(bin)) candidates.push(bin);
+        }
+      }
+    }
+  } catch {}
+
+  for (const c of candidates) {
+    if (c && fs.existsSync(c)) return c;
+  }
+  return undefined;
 }

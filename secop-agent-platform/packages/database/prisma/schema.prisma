@@ -8,15 +8,15 @@ generator client {
 }
 
 model User {
-  id           String    @id @default(uuid())
-  email        String    @unique
+  id           String   @id @default(uuid())
+  email        String   @unique
   name         String
   passwordHash String
-  role         String    @default("user")
+  role         String   @default("user")
   companyId    String?
-  company      Company?  @relation(fields: [companyId], references: [id], onDelete: SetNull)
-  createdAt    DateTime  @default(now())
-  updatedAt    DateTime  @updatedAt
+  company      Company? @relation(fields: [companyId], references: [id], onDelete: SetNull)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
 }
 
 model Company {
@@ -40,44 +40,46 @@ model Company {
 }
 
 model ContractMatch {
-  id                    String    @id @default(uuid())
-  companyId             String
-  company               Company   @relation(fields: [companyId], references: [id], onDelete: Cascade)
-  secopId               String
-  entity                String
-  title                 String
-  budget                Float
-  urlPliego             String
-  status                String    @default("PENDING_ANALYSIS")
-  phase                 String    @default("")
-  contractStatus        String    @default("")
-  department            String    @default("")
-  region                String    @default("")
-  categoryCode          String    @default("")
-  categoryName          String    @default("")
-  contactName           String    @default("")
-  contactPhone          String    @default("")
-  contactEmail          String    @default("")
-  estimatedDuration     String    @default("")
-  publishedAt           DateTime?
-  closingDate           DateTime?
-  presentationDeadline  DateTime?
-  matchScore            Int       @default(0)
-  viabilityScore        Int?
-  presentationRoute     String?
-  reportLegal           String?
-  reportFinancial       String?
-  reportFinal           String?
-  errorMessage          String    @default("")
-  retryCount            Int       @default(0)
-  source                String    @default("secop_ii") // secop_ii | secop_i_procesos | secop_i_integrado
-  awarded               Boolean   @default(false)      // adjudicado (cruzado con jbjy-vk9h)
-  awardedProveedor      String    @default("")         // proveedor_adjudicado
-  valorAdjudicado       Float?                         // valor_del_contrato adjudicado
-  rawSodaData           String    @default("")
-  notified              Boolean   @default(false)
-  createdAt             DateTime  @default(now())
-  updatedAt             DateTime  @updatedAt
+  id                   String            @id @default(uuid())
+  companyId            String
+  company              Company           @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  secopId              String
+  entity               String
+  title                String
+  budget               Float
+  urlPliego            String
+  status               String            @default("PENDING_ANALYSIS")
+  phase                String            @default("")
+  contractStatus       String            @default("")
+  department           String            @default("")
+  region               String            @default("")
+  categoryCode         String            @default("")
+  categoryName         String            @default("")
+  contactName          String            @default("")
+  contactPhone         String            @default("")
+  contactEmail         String            @default("")
+  estimatedDuration    String            @default("")
+  publishedAt          DateTime?
+  closingDate          DateTime?
+  presentationDeadline DateTime?
+  matchScore           Int               @default(0)
+  viabilityScore       Int?
+  presentationRoute    String?
+  reportLegal          String?
+  reportFinancial      String?
+  reportFinal          String?
+  errorMessage         String            @default("")
+  retryCount           Int               @default(0)
+  source               String            @default("secop_ii") // secop_ii | secop_i_procesos | secop_i_integrado
+  awarded              Boolean           @default(false) // adjudicado (cruzado con jbjy-vk9h)
+  awardedProveedor     String            @default("") // proveedor_adjudicado
+  valorAdjudicado      Float? // valor_del_contrato adjudicado
+  rawSodaData          String            @default("")
+  notified             Boolean           @default(false)
+  vortalNoticeUid      String? // noticeUID de VORTAL (Fase 2, source vortal_scraped)
+  documents            ProcessDocument[]
+  createdAt            DateTime          @default(now())
+  updatedAt            DateTime          @updatedAt
 
   @@unique([companyId, secopId])
   @@index([status])
@@ -85,22 +87,23 @@ model ContractMatch {
   @@index([companyId])
   @@index([closingDate])
   @@index([matchScore])
+  @@index([vortalNoticeUid])
 }
 
 model ScanRun {
-  id            String   @id @default(uuid())
-  startedAt     DateTime @default(now())
-  completedAt   DateTime?
-  status        String   @default("RUNNING")
-  contractsFound Int     @default(0)
-  companiesScanned Int   @default(0)
-  errors        String   @default("")
-  triggeredBy   String   @default("cron")
+  id               String    @id @default(uuid())
+  startedAt        DateTime  @default(now())
+  completedAt      DateTime?
+  status           String    @default("RUNNING")
+  contractsFound   Int       @default(0)
+  companiesScanned Int       @default(0)
+  errors           String    @default("")
+  triggeredBy      String    @default("cron")
 }
 
 model IngestLog {
   id             String   @id @default(uuid())
-  datasetId      String   // p6dx-8zbt, rpmr-utcd, etc.
+  datasetId      String // p6dx-8zbt, rpmr-utcd, etc.
   lastIngestAt   DateTime @default(now())
   lastSeenPub    DateTime // marca de agua para pulls incrementales
   recordsFetched Int      @default(0)
@@ -108,4 +111,36 @@ model IngestLog {
   errors         String   @default("")
 
   @@unique([datasetId])
+}
+
+// Documentos (pliegos, addendos, avisos) descargados de VORTAL (Fase 2.2)
+model ProcessDocument {
+  id           String        @id @default(uuid())
+  contractId   String // FK a ContractMatch.id
+  contract     ContractMatch @relation(fields: [contractId], references: [id], onDelete: Cascade)
+  documentType String // pliego | addendo | aviso
+  vortalDocId  String?
+  fileName     String
+  storagePath  String // ruta local al PDF (storage/pliegos/{secopId}/{docId}.pdf)
+  downloadUrl  String
+  contentType  String        @default("application/pdf")
+  sizeBytes    Int?
+  checksum     String? // sha256 para dedup
+  fetchedAt    DateTime      @default(now())
+
+  @@unique([contractId, documentType, vortalDocId])
+  @@index([contractId])
+}
+
+// Registro de ejecuciones del scraper VORTAL (Fase 2.1)
+model ScrapeSession {
+  id            String    @id @default(uuid())
+  startedAt     DateTime  @default(now())
+  completedAt   DateTime?
+  status        String    @default("RUNNING") // RUNNING | OK | FAILED | BLOCKED
+  newProcesses  Int       @default(0)
+  newDocuments  Int       @default(0)
+  errors        String    @default("")
+  captchaSolved Boolean?
+  fallbackUsed  Boolean   @default(false)
 }

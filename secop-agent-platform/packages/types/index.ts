@@ -54,8 +54,36 @@ export interface ContractMatch {
   valorAdjudicado?: number | null
   rawSodaData: string
   notified: boolean
+  vortalNoticeUid?: string | null
+  documents?: ProcessDocument[]
   createdAt: string
   updatedAt: string
+}
+
+export interface ProcessDocument {
+  id: string
+  contractId: string
+  documentType: string // pliego | addendo | aviso
+  vortalDocId?: string | null
+  fileName: string
+  storagePath: string
+  downloadUrl: string
+  contentType: string
+  sizeBytes?: number | null
+  checksum?: string | null
+  fetchedAt: string
+}
+
+export interface ScrapeSession {
+  id: string
+  startedAt: string
+  completedAt?: string | null
+  status: string // RUNNING | OK | FAILED | BLOCKED
+  newProcesses: number
+  newDocuments: number
+  errors: string
+  captchaSolved?: boolean | null
+  fallbackUsed: boolean
 }
 
 export interface PaginatedResponse<T> {
