@@ -254,10 +254,11 @@ Pliego (Markdown) + Perfil de Empresa
 - `VeredictoFinal`: viable (bool), score (0-100), resumen ejecutivo, causales de rechazo
 
 **Configuracion LLM:**
-- **Provider**: Ollama (local, default) o Gemini API
-- **Modelo default**: `deepseek-r1:8b` via Ollama
-- **Alternativa**: `gemini-2.0-flash` (requiere `GEMINI_API_KEY`)
+- **Provider**: Gemini API (default) u Ollama local
+- **Modelo default**: `gemini/gemini-2.0-flash` (requiere `GEMINI_API_KEY`)
+- **Alternativa local**: `deepseek-r1:8b` via Ollama (`LLM_PROVIDER=ollama`)
 - **Temperature**: 0.3 (baja, para analisis estructurado y consistente)
+- El LLM se construye bajo demanda (`llm_config.py`): el worker arranca aunque falte la clave; el error aparece al procesar la tarea, no al iniciar.
 
 #### RAG Pipeline (Opcional)
 
@@ -651,22 +652,24 @@ Tarea entrante (ContractMatch):
 ### Configuracion de LLM
 
 ```python
-# agentes_pliego.py
-# Provider: ollama (default) o gemini
-LLM_PROVIDER = os.getenv("LLM_PROVIDER", "ollama")
+# llm_config.py - única implementación compartida (agentes_pliego.py y generador_ruta.py)
+# Provider: gemini (API, default) u ollama (local). Se construye bajo demanda.
+def crear_llm(temperature: float = 0.3) -> LLM:
+    provider = os.getenv("LLM_PROVIDER", "gemini").lower()
 
-if USE_LOCAL_LLM:
-    llm = LLM(
-        model=f"ollama/{OLLAMA_MODEL}",  # deepseek-r1:8b
-        base_url=OLLAMA_BASE_URL,         # http://localhost:11434
-        temperature=0.3,
-    )
-else:
-    llm = LLM(
-        model=GEMINI_MODEL,               # gemini/gemini-2.0-flash
-        api_key=GEMINI_API_KEY,
-        temperature=0.3,
-    )
+    if provider == "ollama":
+        return LLM(
+            model=f"ollama/{os.getenv('OLLAMA_MODEL', 'deepseek-r1:8b')}",
+            base_url=os.getenv("OLLAMA_BASE_URL", "http://localhost:11434"),
+            temperature=temperature,
+        )
+    if provider == "gemini":
+        api_key = os.getenv("GEMINI_API_KEY")  # requerida; ValueError claro si falta
+        return LLM(
+            model=os.getenv("GEMINI_MODEL", "gemini/gemini-2.0-flash"),
+            api_key=api_key,
+            temperature=temperature,
+        )
 ```
 
 ### RAG Pipeline

@@ -104,11 +104,11 @@ export interface PaginatedResponse<T> {
 export interface AnalysisInput {
   status: 'VIABLE' | 'REJECTED' | 'ERROR'
   viabilityScore: number
-  reportLegal?: string
-  reportFinancial?: string
-  reportFinal?: string
-  presentationRoute?: string
-  errorMessage?: string
+  reportLegal?: string | null
+  reportFinancial?: string | null
+  reportFinal?: string | null
+  presentationRoute?: string | null
+  errorMessage?: string | null
 }
 
 export interface PresentationStep {

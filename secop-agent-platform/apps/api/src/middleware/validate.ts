@@ -50,11 +50,13 @@ export const companyUpdateSchema = z.object({
 export const analysisSchema = z.object({
   status: z.enum(['VIABLE', 'REJECTED', 'ERROR']),
   viabilityScore: z.number().int().min(0).max(100),
-  reportLegal: z.string().optional(),
-  reportFinancial: z.string().optional(),
-  reportFinal: z.string().optional(),
-  presentationRoute: z.string().optional(),
-  errorMessage: z.string().optional(),
+  // El worker envía null cuando no hay reporte (p. ej. REJECTED/ERROR sin análisis
+  // intermedio); la columna Prisma es nullable. nullish() acepta null y undefined.
+  reportLegal: z.string().nullish(),
+  reportFinancial: z.string().nullish(),
+  reportFinal: z.string().nullish(),
+  presentationRoute: z.string().nullish(),
+  errorMessage: z.string().nullish(),
 })
 
 export const searchSchema = z.object({

@@ -57,7 +57,9 @@ services:
     environment:
       - BACKEND_URL=http://api:3001
       - WORKER_API_KEY=${WORKER_API_KEY:-worker-dev-key-change}
-      - LLM_PROVIDER=${LLM_PROVIDER:-ollama}
+      - LLM_PROVIDER=${LLM_PROVIDER:-gemini}
+      - GEMINI_API_KEY=${GEMINI_API_KEY:-}
+      - GEMINI_MODEL=${GEMINI_MODEL:-gemini/gemini-2.0-flash}
       - OLLAMA_BASE_URL=${OLLAMA_BASE_URL:-http://host.docker.internal:11434}
       - OLLAMA_MODEL=${OLLAMA_MODEL:-deepseek-r1:8b}
       - MAX_OCR_PAGES=${MAX_OCR_PAGES:-50}

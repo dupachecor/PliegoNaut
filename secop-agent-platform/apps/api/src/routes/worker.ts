@@ -1,4 +1,5 @@
 import { Router } from 'express';
+import { Prisma } from '@prisma/client';
 import { prisma } from '@pliegonaut/database';
 
 import { requireWorkerKey } from '../middleware/auth';
@@ -6,25 +7,35 @@ import { validate, analysisSchema } from '../middleware/validate';
 
 const router = Router();
 
-// Worker task polling - atomic claim
+// Worker task polling - atomic claim (FOR UPDATE SKIP LOCKED)
 router.get('/api/worker/tasks', requireWorkerKey, async (_req, res) => {
-  // Use raw transaction to atomically claim tasks
   const tasks = await prisma.$transaction(async (tx) => {
-    const pending = await tx.contractMatch.findMany({
-      where: { status: "PENDING_ANALYSIS" },
+    // Claim atómico: la subconsulta bloquea (FOR UPDATE) y salta (SKIP LOCKED) las
+    // filas que otro worker está reclamando en ese instante. Sin esto, dos workers
+    // pueden leer las mismas filas PENDING y procesar el mismo contrato dos veces.
+    const claimed = await tx.$queryRaw<{ id: string }[]>(
+      Prisma.sql`
+        UPDATE "ContractMatch"
+        SET status = 'PROCESSING', "updatedAt" = now()
+        WHERE id IN (
+          SELECT id FROM "ContractMatch"
+          WHERE status = 'PENDING_ANALYSIS'
+          ORDER BY "matchScore" DESC, "createdAt" ASC
+          LIMIT 5
+          FOR UPDATE SKIP LOCKED
+        )
+        RETURNING id
+      `
+    );
+
+    if (claimed.length === 0) return [];
+
+    const ids = claimed.map((c) => c.id);
+    return tx.contractMatch.findMany({
+      where: { id: { in: ids } },
       include: { company: true },
-      take: 5,
       orderBy: [{ matchScore: 'desc' }, { createdAt: 'asc' }],
     });
-
-    if (pending.length > 0) {
-      await tx.contractMatch.updateMany({
-        where: { id: { in: pending.map(t => t.id) }, status: "PENDING_ANALYSIS" },
-        data: { status: "PROCESSING" },
-      });
-    }
-
-    return pending;
   });
 
   res.json(tasks);

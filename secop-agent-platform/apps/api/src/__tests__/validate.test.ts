@@ -68,6 +68,36 @@ describe('analysisSchema', () => {
     expect(result.success).toBe(true)
   })
 
+  it('acepta REJECTED sin reportes intermedios (null del worker)', () => {
+    const result = analysisSchema.safeParse({
+      status: 'REJECTED',
+      viabilityScore: 30,
+      reportLegal: null,
+      reportFinancial: null,
+      reportFinal: '**Resumen Ejecutivo:**\nNo es viable',
+      presentationRoute: null,
+    })
+    expect(result.success).toBe(true)
+    if (!result.success) return
+    expect(result.data.reportLegal).toBeNull()
+    expect(result.data.presentationRoute).toBeNull()
+  })
+
+  it('acepta ERROR sin reportes (null del worker)', () => {
+    const result = analysisSchema.safeParse({
+      status: 'ERROR',
+      viabilityScore: 0,
+      reportLegal: null,
+      reportFinancial: null,
+      reportFinal: '**Resumen Ejecutivo:**\nError durante el análisis',
+      presentationRoute: null,
+      errorMessage: 'PDF no descargado',
+    })
+    expect(result.success).toBe(true)
+    if (!result.success) return
+    expect(result.data.errorMessage).toBe('PDF no descargado')
+  })
+
   it('rechaza status inválido', () => {
     const result = analysisSchema.safeParse({
       status: 'INVALID',

@@ -3,7 +3,8 @@ import json
 from datetime import datetime, timedelta
 from pydantic import BaseModel, Field
 from typing import List, Optional
-from crewai import Agent, Task, Crew, Process, LLM
+from crewai import Agent, Task, Crew, Process
+from llm_config import crear_llm
 
 
 class PasoRuta(BaseModel):
@@ -21,23 +22,6 @@ class RutaPresentacion(BaseModel):
     plazo_total_dias: int = Field(description="Días totales estimados del proceso")
     fecha_cierre: Optional[str] = Field(default=None, description="Fecha de cierre del proceso si se conoce")
     advertencias: List[str] = Field(default=[], description="Advertencias importantes")
-
-
-def crear_llm() -> LLM:
-    """Crea la instancia del LLM según la configuración."""
-    provider = os.getenv("LLM_PROVIDER", "gemini").lower()
-    if provider == "ollama":
-        return LLM(
-            model=f"ollama/{os.getenv('OLLAMA_MODEL', 'deepseek-r1:8b')}",
-            base_url=os.getenv("OLLAMA_BASE_URL", "http://localhost:11434"),
-            temperature=0.3,
-        )
-    else:
-        return LLM(
-            model=os.getenv("GEMINI_MODEL", "gemini/gemini-2.0-flash"),
-            api_key=os.getenv("GEMINI_API_KEY"),
-            temperature=0.3,
-        )
 
 
 def generar_ruta_presentacion(pliego_texto: str, perfil_empresa: dict, secop_id: str, closing_date, entity_name: str) -> dict:

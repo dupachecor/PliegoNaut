@@ -1,7 +1,8 @@
 import os
 from typing import List, Optional
 from pydantic import BaseModel, Field
-from crewai import Agent, Task, Crew, Process, LLM
+from crewai import Agent, Task, Crew, Process
+from llm_config import crear_llm
 
 # ==========================================
 # 1. MODELOS DE VALIDACIÓN Y SALIDA (AI HARNESS - PYDANTIC)
@@ -30,39 +31,17 @@ class VeredictoFinal(BaseModel):
 # ==========================================
 # 2. CONFIGURACIÓN DEL LLM
 # ==========================================
-# Opción 1: DeepSeek-R1 (Local vía Ollama, default)
-# Opción 2: Gemini 2.0 Flash (API, requiere GEMINI_API_KEY)
-# Configurable via LLM_PROVIDER=ollama|gemini
-
-LLM_PROVIDER = os.getenv("LLM_PROVIDER", "ollama").lower()
-USE_LOCAL_LLM = LLM_PROVIDER == "ollama"
-
-_ollama_base = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
-_ollama_model = os.getenv("OLLAMA_MODEL", "deepseek-r1:8b")
-_gemini_model = os.getenv("GEMINI_MODEL", "gemini/gemini-2.0-flash")
-
-if USE_LOCAL_LLM:
-    llm = LLM(
-        model=f"ollama/{_ollama_model}",
-        base_url=_ollama_base,
-        temperature=0.3,
-    )
-else:
-    api_key = os.getenv("GEMINI_API_KEY")
-    if not api_key:
-        raise ValueError("GEMINI_API_KEY no está configurada")
-    llm = LLM(
-        model=_gemini_model,
-        api_key=api_key,
-        temperature=0.3,
-    )
-
+# Provider actual: Gemini API (LLM_PROVIDER=gemini, default). Requiere GEMINI_API_KEY.
+# Alternativa local: Ollama (LLM_PROVIDER=ollama, modelo deepseek-r1:8b).
+# El LLM se construye bajo demanda en crear_equipo_analisis() (ver llm_config.py):
+# así el worker arranca aunque la clave no esté configurada, y el error aparece
+# solo al procesar la tarea (se reporta como ERROR en la tarea).
 
 # ==========================================
 # 3. DEFINICIÓN DE LOS AGENTES
 # ==========================================
 def crear_equipo_analisis(pliego_markdown: str, perfil_empresa: dict) -> Crew:
-    
+    llm = crear_llm()
     # AGENTE 1: Analista Legal
     analista_legal = Agent(
         role='Analista Jurídico de Licitaciones Públicas',
@@ -186,7 +165,7 @@ if __name__ == "__main__":
 
     equipo_pliegonaut = crear_equipo_analisis(pliego_mock, empresa_mock)
     
-    print("[*] Ejecutando Agentes... (Requiere API Key válida de Gemini o Ollama activo para procesar el veredicto)")
+    print("[*] Ejecutando Agentes... (Requiere GEMINI_API_KEY configurada o Ollama activo para procesar el veredicto)")
     
     try:
         # En producción esto demora entre 10 a 30 segundos
@@ -205,5 +184,5 @@ if __name__ == "__main__":
     except Exception as e:
         print(f"\n[!] Error en la ejecución de CrewAI: {str(e)}")
         print("\n[INFO] Para que esto corra exitosamente, asegúrate de instalar las dependencias:")
-        print("       pip install crewai pydantic 'crewai[gemini]'")
-        print("       Y exportar tu GEMINI_API_KEY o activar Ollama.")
+        print("       pip install 'crewai[google-genai]' pydantic")
+        print("       Y exportar tu GEMINI_API_KEY (provider default) o activar Ollama.")
