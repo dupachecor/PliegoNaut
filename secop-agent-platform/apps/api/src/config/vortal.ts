@@ -31,6 +31,7 @@ export interface VortalConfig {
     maxDelayMs: number;
     maxScrapesPerWindowMin: number;
     windowMinutes: number;
+    userAgents: string[]; // pool de User-Agent rotativo (Fase 2.7)
   };
   limits: {
     maxDocSizeMB: number;
@@ -120,10 +121,16 @@ export const VORTAL: VortalConfig = {
     ],
   },
   rateLimit: {
-    minDelayMs: 30000,
-    maxDelayMs: 60000,
-    maxScrapesPerWindowMin: 1,
-    windowMinutes: 15,
+    minDelayMs: parseInt(process.env.VORTAL_MIN_DELAY_MS || '30000', 10),
+    maxDelayMs: parseInt(process.env.VORTAL_MAX_DELAY_MS || '60000', 10),
+    maxScrapesPerWindowMin: parseInt(process.env.VORTAL_MAX_SCRAPES_PER_WINDOW || '1', 10),
+    windowMinutes: parseInt(process.env.VORTAL_WINDOW_MINUTES || '15', 10),
+    userAgents: [
+      'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36',
+      'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36',
+      'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+      'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36',
+    ],
   },
   limits: {
     maxDocSizeMB: 50,

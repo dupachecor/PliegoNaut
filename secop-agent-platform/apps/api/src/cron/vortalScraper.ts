@@ -17,8 +17,12 @@ export function startVortalScraperCron() {
     running = true;
     try {
       const r = await runVortalScrape(logger);
+      if (r.fallback) {
+        logger.warn('[VORTAL] Fallback activo - datos provistos por ingestión SODA (datos.gov.co)');
+        return;
+      }
       logger.info(
-        `[VORTAL] tick: nuevos=${r.nuevos} vistos=${r.vistos} blocked=${r.blocked} ok=${r.ok} ` +
+        `[VORTAL] tick: nuevos=${r.nuevos} vistos=${r.vistos} docs=${r.documentos} blocked=${r.blocked} ok=${r.ok} ` +
         `${r.error ? '| error=' + r.error : ''}`,
       );
     } catch (err) {

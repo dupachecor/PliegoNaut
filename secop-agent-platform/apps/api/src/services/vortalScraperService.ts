@@ -17,6 +17,8 @@ import path from 'path';
 import fs from 'fs';
 import { prisma } from '@pliegonaut/database';
 import { downloadDocumentsForNotices } from './vortalDocumentsService';
+import { vortalFallback, VORTAL_MAX_FAILURES, VORTAL_FALLBACK_DURATION_MS } from '../lib/vortalFallback';
+import { pickUserAgent, withRetry } from '../lib/vortalRateLimit';
 import {
   VORTAL,
   vortalSearchUrl,
@@ -28,6 +30,9 @@ import {
 
 const puppeteer = addExtra(puppeteerCore as any);
 puppeteer.use(StealthPlugin());
+
+// Última raspada completada (rate limit de 1 por ventana, Fase 2.7).
+let lastScrapeAt: number | null = null;
 
 export interface VortalNoticeRow {
   noticeUid: string;
@@ -47,6 +52,8 @@ export interface VortalScrapeResult {
   ok: boolean;
   blocked: boolean;
   captchaSolved: boolean;
+  fallback: boolean; // el scrape se omitió por fallback activo
+  rateLimited: boolean; // el scrape se omitió por rate limit (máx 1/15min)
   vistos: number; // filas en grilla dentro de la ventana
   nuevos: number; // noticeUID nuevos persistidos
   documentos: number; // documentos PDF guardados (Fase 2.2)
@@ -266,6 +273,8 @@ export async function runVortalScrape(log: Log = defaultLog): Promise<VortalScra
     ok: false,
     blocked: false,
     captchaSolved: false,
+    fallback: false,
+    rateLimited: false,
     vistos: 0,
     nuevos: 0,
     documentos: 0,
@@ -273,6 +282,27 @@ export async function runVortalScrape(log: Log = defaultLog): Promise<VortalScra
     sessionId: null,
     durationMs: 0,
   };
+
+  // ===== Rate limit: máx 1 raspada cada windowMinutes (Fase 2.7) =====
+  const rateLimitWindowMs = VORTAL.rateLimit.windowMinutes * 60 * 1000;
+  if (lastScrapeAt !== null && Date.now() - lastScrapeAt < rateLimitWindowMs) {
+    result.rateLimited = true;
+    result.ok = false;
+    result.durationMs = 0;
+    log.info(`[VORTAL] Rate limit: omitiendo (última raspada hace <${VORTAL.rateLimit.windowMinutes}min)`);
+    return result;
+  }
+  lastScrapeAt = Date.now();
+
+  // ===== Fallback activo (Fase 2.6): no ejecutar, la ingestión SODA sigue proveyendo =====
+  if (vortalFallback.inFallback()) {
+    const rem = Math.round(vortalFallback.remainingMs() / 60000);
+    result.fallback = true;
+    result.ok = false;
+    result.durationMs = 0;
+    log.info(`[VORTAL] Fallback activado - se omite el scrape (restan ~${rem}min). La ingestión SODA sigue proveyendo datos.`);
+    return result;
+  }
 
   const session = await prisma.scrapeSession.create({ data: { status: 'RUNNING' } });
   result.sessionId = session.id;
@@ -288,6 +318,9 @@ export async function runVortalScrape(log: Log = defaultLog): Promise<VortalScra
     await updateSession({ status: 'FAILED', errors: 'No se encontró Chromium', completedAt: new Date() });
     result.ok = false;
     result.error = 'No se encontró un binario de Chromium';
+    if (vortalFallback.recordFailure()) {
+      log.error(`[VORTAL] Fallback ACTIVADO tras ${VORTAL_MAX_FAILURES} fallos consecutivos (sin Chromium).`);
+    }
     result.durationMs = Date.now() - started;
     return result;
   }
@@ -310,9 +343,7 @@ export async function runVortalScrape(log: Log = defaultLog): Promise<VortalScra
     });
     const page = await browser.newPage();
     await page.setViewport({ width: 1440, height: 900 });
-    await page.setUserAgent(
-      'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36',
-    );
+    await page.setUserAgent(pickUserAgent()); // UA rotativo (Fase 2.7)
 
     const url = vortalSearchUrl();
     log.info(`[VORTAL] Navegando a ${url}`);
@@ -330,6 +361,12 @@ export async function runVortalScrape(log: Log = defaultLog): Promise<VortalScra
       if (!result.captchaSolved) {
         result.blocked = true;
         result.ok = false;
+        if (vortalFallback.recordFailure()) {
+          log.error(`[VORTAL] Fallback ACTIVADO tras ${VORTAL_MAX_FAILURES} fallos consecutivos (ReCaptcha no resuelto). ` +
+            `Reintento automático en ~${VORTAL_FALLBACK_DURATION_MS / 60000}min.`);
+        } else {
+          log.error(`[VORTAL] Fallo #${vortalFallback.failuresCount}/${VORTAL_MAX_FAILURES} (ReCaptcha).`);
+        }
         await updateSession({
           status: 'BLOCKED',
           captchaSolved: false,
@@ -343,11 +380,16 @@ export async function runVortalScrape(log: Log = defaultLog): Promise<VortalScra
       log.info('[VORTAL] Captcha superado');
     }
 
-    // ===== Ejecutar búsqueda (la grilla no se puebla sola con params de URL) =====
-    await clickSearch(page, log);
-
-    // ===== Extraer y filtrar =====
-    const rows = await extractGridRows(page);
+    // ===== Ejecutar búsqueda + extraer (con retry y backoff, Fase 2.7) =====
+    const rows = await withRetry(
+      async () => {
+        await clickSearch(page, log);
+        const r = await extractGridRows(page);
+        if (r.length === 0) throw new Error('Grid vacío tras la búsqueda (posible layout o ban)');
+        return r;
+      },
+      { retries: 2, baseDelayMs: 3000, maxDelayMs: 15000 },
+    );
     const now = Date.now();
     const windowMs = VORTAL.newProcessWindowHours * 60 * 60 * 1000;
     const inWindow = rows.filter(
@@ -375,6 +417,7 @@ export async function runVortalScrape(log: Log = defaultLog): Promise<VortalScra
     result.documentos = guardados;
 
     result.ok = true;
+    vortalFallback.recordSuccess();
     await updateSession({
       status: 'OK',
       newProcesses: result.nuevos,
@@ -386,7 +429,12 @@ export async function runVortalScrape(log: Log = defaultLog): Promise<VortalScra
   } catch (err: any) {
     result.ok = false;
     result.error = err?.message || String(err);
-    log.error(`[VORTAL] ERROR: ${result.error}`);
+    if (vortalFallback.recordFailure()) {
+      log.error(`[VORTAL] Fallback ACTIVADO tras ${VORTAL_MAX_FAILURES} fallos consecutivos. ` +
+        `Reintento automático en ~${VORTAL_FALLBACK_DURATION_MS / 60000}min.`);
+    } else {
+      log.error(`[VORTAL] Fallo #${vortalFallback.failuresCount}/${VORTAL_MAX_FAILURES}: ${result.error}`);
+    }
     await updateSession({
       status: 'FAILED',
       errors: result.error,

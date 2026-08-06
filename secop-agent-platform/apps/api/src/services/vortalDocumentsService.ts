@@ -17,6 +17,7 @@ import fs from 'fs';
 import { prisma } from '@pliegonaut/database';
 import { VORTAL, VORTAL_BASE_URL, VORTAL_DOCS_DIR } from '../config/vortal';
 import { sha256, looksLikePdf, exceedsMaxSize, savePdf, buildStoragePath } from './documentsStorageService';
+import { randomDelay, sleep } from '../lib/vortalRateLimit';
 
 export interface VortalDocumentRef {
   documentFileId: string;
@@ -229,6 +230,8 @@ export async function downloadDocumentsForNotice(
 }
 
 // Descarga los documentos de una lista de noticeUID, navegando el navegador a cada detalle.
+// Procesa UN proceso a la vez (Fase 2.7: no paralelizar procesos) y aplica un delay
+// aleatorio (30-60s default) entre navegaciones para no ser baneados.
 export async function downloadDocumentsForNotices(
   page: any,
   noticeUids: string[],
@@ -237,13 +240,19 @@ export async function downloadDocumentsForNotices(
   if (noticeUids.length === 0) return { totalDocs: 0, guardados: 0 };
   let totalDocs = 0;
   let guardados = 0;
-  for (const uid of noticeUids) {
+  for (let i = 0; i < noticeUids.length; i++) {
+    const uid = noticeUids[i];
     try {
+      if (i > 0) {
+        const d = randomDelay();
+        log.info(`[VORTAL] Esperando ${(d / 1000).toFixed(0)}s antes del siguiente detalle...`);
+        await sleep(d);
+      }
       await page.goto(
         `${VORTAL_BASE_URL}/Public/Tendering/OpportunityDetail/Index?noticeUID=${encodeURIComponent(uid)}&isFromPublicArea=True&isModal=true&asPopupView=true`,
         { waitUntil: 'domcontentloaded', timeout: 60000 },
       );
-      await new Promise((r) => setTimeout(r, 3000));
+      await sleep(3000);
       const r = await downloadDocumentsForNotice(page, uid, log);
       totalDocs += r.total;
       guardados += r.guardados;

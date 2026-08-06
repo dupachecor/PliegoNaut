@@ -394,7 +394,18 @@ model ScrapeSession {
 
 **Qué:** Si el scraper falla 3 veces consecutivas, conmutar a datos.gov.co.
 
-**Archivos:** `apps/api/src/services/vortalScraperService.ts`
+> **Estado de implementación (2026-08-06):** ✅ implementado y verificado.
+> - `apps/api/src/lib/vortalFallback.ts` — circuit breaker: `VORTAL_MAX_FAILURES` (3) fallos consecutivos
+>   (captcha no resuelto, error 5xx, sin Chromium) activan el fallback por `VORTAL_FALLBACK_DURATION_MS` (1h);
+>   tras la hora se reintenta automáticamente. Configurable por env.
+> - Integrado en `runVortalScrape`: si el fallback está activo → **short-circuit** (0ms, sin lanzar navegador,
+>   sin crear sesión) y log `[VORTAL] Fallback activado - se omite el scrape… La ingestión SODA sigue proveyendo datos`.
+>   Los fallos/éxitos actualizan el contador; en el 3er fallo log de activación clara.
+> - La ingestión SODA (Fase 1) es un cron independiente → sigue proveyendo datos con lag de 24h durante el fallback.
+> - Verificado: 3 fallos → `fallback=true`; el servicio retorna `ok=false, fallback=true` sin ejecutar;
+>   un éxito limpia el estado. Tests: `__tests__/vortalFallback.test.ts` (4).
+
+**Archivos:** `apps/api/src/services/vortalScraperService.ts` (+ `apps/api/src/lib/vortalFallback.ts`)
 
 **Lógica:**
 - Detectar 3 fallos consecutivos (ReCaptcha no resuelta, ban, 5xx).
@@ -413,34 +424,36 @@ model ScrapeSession {
 
 **Qué:** Evitar baneo de IP por parte de VORTAL.
 
-**Reglas:**
-- Máx 1 raspada cada 15 min
-- 1 proceso a la vez (no paralelizar descargas)
-- Delay 30-60s entre requests
-- User-Agent rotativo
-- Manejo de sesión (cookies)
-- Reintentar con backoff exponencial
+> **Estado de implementación (2026-08-06):** ✅ implementado.
+> - `apps/api/src/lib/vortalRateLimit.ts` — `randomDelay()` (30-60s default, `VORTAL_MIN/MAX_DELAY_MS`),
+>   `pickUserAgent()` (pool rotativo de UAs) y `withRetry()` (backoff exponencial 2s→4s→… acotado).
+> - En `runVortalScrape`:
+>   - **Rate limit de 1 raspada por ventana** (`VORTAL_WINDOW_MINUTES`, default 15): si se invoca antes de
+>     la ventana, omite con `rateLimited=true` (verificado en vivo: 2ª ejecución inmediata → omitida, 0ms).
+>   - UA rotativo por ejecución.
+>   - Retry con backoff en "buscar + extraer grilla" si queda vacía (posible layout/ban).
+> - En `vortalDocumentsService`: **1 proceso a la vez** (secuencial) + delay aleatorio (30-60s) entre
+>   navegaciones a detalles. Las descargas por documento siguen con pool de 5 (límite de la sub-fase 2.2).
+> - Sesión/cookies persistidas (ya desde 2.1). Backoff funcional con tests: `__tests__/vortalRateLimit.test.ts` (5).
 
 **Verificación:**
-- [ ] No baneo en 48h de operación
-- [ ] Delays respetados
-- [ ] Backoff funcional
+- [ ] No baneo en 48h de operación (pendiente de observación)
+- [x] Delays respetados (randomDelay dentro de rango, testeado)
+- [x] Backoff funcional (withRetry con re-intentos y shouldRetry, testeado)
 
 ### 2.8 Sub-fase: Documento de riesgo legal
 
 **Qué:** Documentar la decisión de scraping con análisis legal.
 
-**Archivo:** `docs/SCRAPER_RISK.md`
-
-**Contenido:**
-- Análisis de Ley 1712 de Transparencia (ampara reuso de datos públicos)
-- Términos de uso de VORTAL (podrían limitar scraping automatizado)
-- Volumen conservador (no agresivo)
-- Uso solo de lo público sin login
-- Decisión documentada por el usuario
+> **Estado de implementación (2026-08-06):** ✅ creado → `docs/SCRAPER_RISK.md`.
+> - Análisis de **Ley 1712 de 2012** (reuso de información pública, divulgación proactiva, art. 20) y CONPES 3920.
+> - Riesgo contractual por términos de uso de VORTAL (pendiente de revisar el texto vigente).
+> - Propiedad intelectual (documentos de entidades públicas) y escenario de seguridad informática.
+> - Volumen conservador documentado (lo implementado en 2.1-2.7) y plan de contingencia (detener ante requerimiento → Fase 3).
+> - **Decisión documentada con firma del usuario** (pendiente de firmar).
 
 **Verificación:**
-- [ ] Documento creado
+- [x] Documento creado
 - [ ] Usuario revisa y firma/evidencia
 
 ### 2.9 Criterios de salida Fase 2
