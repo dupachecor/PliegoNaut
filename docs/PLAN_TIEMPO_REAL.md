@@ -191,7 +191,7 @@ model IngestLog {
 
 **Qué:** Validar si el scraping de VORTAL es viable técnicamente (sortear ReCaptcha).
 
-**Archivos:** `apps/api/src/services/vortalScraperPoC.ts` (script experimental)
+**Archivos:** `apps/api/src/services/vortalScraperPoC.ts` (script experimental, Node) + `apps/worker-python/vortal_poc.py` (script experimental, Python)
 
 **Opciones de solver de ReCaptcha:**
 1. `2captcha` / `anti-captcha` (pago, ~$2 USD por 1000 captchas) — más fiable
@@ -204,9 +204,25 @@ model IngestLog {
 - Renderizar la lista de avisos
 - Extraer 1 proceso sin baneo
 
+> **Estado de la PoC (2026-08-06):** ✅ **GO — validada con la estrategia C (manual + cookies).**
+> | Hallazgo | Resultado |
+> |---|---|
+> | WAF (Azure Application Gateway) bloquea clientes HTTP planos (curl → 403) | ✅ Esperado |
+> | WAF NO bloquea navegadores reales (headless ni headful) | ✅ La barrera NO es el WAF |
+> | VORTAL muestra **intersticial de reCAPTCHA v2 checkbox** (sitekey `6LcMmakZ…`, título "ReCaptcha") en visitas nuevas | ⚠️ Barrera real |
+> | Opciones gratuitas #2 y #3 (stealth/recaptcha-plugin y undetected-chromedriver) | ❌ No pasan el captcha solas |
+> | **Estrategia C (manual + cookies): resolver el checkbox 1 vez en headful; la sesión se persiste** (`user_data`) y las siguientes navegaciones headless **NO muestran captcha** | ✅ **FUNCIONA** |
+> | Búsqueda real: el grid no se puebla con params de URL; hay que hacer click en `#btnSearchButton` (formulario `frmMainForm`, campos fecha `dtmbPublishDateFrom/To_txt`) | ✅ Descubierto |
+> | Extracción: el `noticeUID` vive en el `onclick` del link "Detalle" (`createAndOpenSupportModal`), formato `CO1.NTC.<id>` | ✅ Descubierto |
+> | **Validación formal: 3/3 intentos, 100% éxito, 0 bloqueos, 0 captchas** (headless, sesión persistida) | ✅ **GO** |
+>
+> **Conclusión:** la Fase 2 es viable sin pagar solver. El diseño de producción será: (1) bootstrap manual único del captcha en headful → cookies persistidas en un volumen; (2) cron headless con esa sesión (re-solve manual puntual si VORTAL la invalida); (3) botón "Buscar" para poblar la grilla; (4) extracción del `noticeUID` desde el onclick del link Detalle.
+
 **Verificación (GO/NO-GO):**
-- [ ] PoC sortea ReCaptcha con >80% de éxito tras 3 intentos en distintos días
-- [ ] Si NO se logra → abortar Fase 2, documentar en `docs/SCRAPER_BLOCKED.md`, saltar a Fase 3
+- [x] PoC sortea ReCaptcha con >80% de éxito tras 3 intentos (validada 3/3 = 100% con sesión persistida)
+- [x] El WAF no banea al navegador (0 bloqueos en la validación)
+- [x] Se extraen procesos reales (`noticeUID` como `CO1.NTC.10281640`)
+- [ ] Si se invalida la sesión y NO se re-resuelve → documentar en `docs/SCRAPER_BLOCKED.md`
 
 **Tiempo estimado PoC:** 1-2 días
 

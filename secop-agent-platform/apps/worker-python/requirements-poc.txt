@@ -1,0 +1,4 @@
+# Dependencias SOLO para la PoC de scraping VORTAL (Fase 2.0).
+# No van en requirements.txt para no ensuciar la imagen del worker.
+selenium>=4.20.0
+undetected-chromedriver>=3.5.5
