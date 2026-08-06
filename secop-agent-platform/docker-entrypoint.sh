@@ -8,7 +8,7 @@ done
 echo "[ENTRYPOINT] PostgreSQL listo."
 
 echo "[ENTRYPOINT] Ejecutando migraciones..."
-npx prisma db push --schema=packages/database/prisma/schema.prisma --skip-generate --accept-data-loss
+npx prisma migrate deploy --schema=packages/database/prisma/schema.prisma
 
 echo "[ENTRYPOINT] Iniciando aplicación..."
 exec "$@"

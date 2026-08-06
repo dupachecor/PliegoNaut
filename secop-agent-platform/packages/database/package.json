@@ -2,8 +2,8 @@
   "name": "@pliegonaut/database",
   "version": "1.0.0",
   "private": true,
-  "main": "dist/index.js",
-  "types": "dist/index.d.ts",
+  "main": "index.js",
+  "types": "index.ts",
   "dependencies": {
     "@prisma/client": "^5.10.0",
     "pg": "^8.13.0"

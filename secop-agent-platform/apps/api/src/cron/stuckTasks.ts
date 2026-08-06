@@ -1,8 +1,8 @@
 import cron from 'node-cron';
 import { prisma } from '@pliegonaut/database';
-import pino from 'pino';
+import { createLogger } from '../lib/logger';
 
-const logger = pino({ name: 'StuckTasksMonitor' });
+const logger = createLogger('StuckTasksMonitor');
 
 export function startStuckTasksMonitor() {
   // Ejecutar cada hora: '0 * * * *'

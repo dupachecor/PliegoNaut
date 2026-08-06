@@ -50,12 +50,21 @@ Fuentes de datos (datos.gov.co - Socrata API):
   - SECOP II Procesos      (p6dx-8zbt)  -> procesos de contratacion
   - SECOP I Procesos       (f789-7hwg)  -> procesos de alcaldias (con fecha de cargue)
   - SECOP I Integrado      (rpmr-utcd)  -> fallback para convocados de SECOP I
+  - SECOP II Contratos     (jbjy-vk9h)  -> enriquecimiento de adjudicaciones (proveedor + valor)
+
+Ingestion incremental (Fases 1.1 + 1.2):
+  - Ingesta p6dx-8zbt (secop_ii) + f789-7hwg (secop_i_procesos, alcaldias) + rpmr-utcd (secop_i_integrado, solo Convocado)
+  - Marca de agua por dataset en IngestLog
+  - Dedup cross-fuente por id_del_proceso (prioridad: secop_ii > secop_i_procesos > secop_i_integrado)
+  - Enriquecimiento con jbjy-vk9h (awarded, awardedProveedor, valorAdjudicado) via id_del_portafolio
+  - rpmr-utcd NO tiene watermark de fecha utilizable (los Convocados no exponen fecha): se ingesta
+    con $where fijo por estado; sigue de fallback en busqueda manual (Query 3c)
         |
         | SODA Query (municipio, departamento, UNSPSC, presupuesto)
         v
   API Server (Node.js/Express)
         |
-        |  Busqueda manual: 3 queries combinadas
+        |  Busqueda manual: 4 queries combinadas
         |    Query 1: $q municipio (full-text SECOP II)
         |    Query 2: $q municipio + dept (SECOP II por departamento)
         |    Query 3: SECOP I Procesos (f789-7hwg) por departamento
@@ -79,10 +88,10 @@ Fuentes de datos (datos.gov.co - Socrata API):
         |
         | PATCH /api/worker/tasks/:id/analysis
         v
-  PostgreSQL (ContractMatch: VIABLE | REJECTED)
+  PostgreSQL (ContractMatch: VIABLE | REJECTED | ERROR)
         |
         v
-  Next.js Dashboard (React Query polling 5s)
+  Next.js Dashboard (React Query polling 8s)
 ```
 
 ---
@@ -98,21 +107,29 @@ Servidor principal que orquesta el sistema. Proporciona endpoints REST y WebSock
 | Metodo | Ruta | Auth | Descripcion |
 |--------|------|------|-------------|
 | GET | `/api/health` | No | Health check del servidor |
-| GET | `/api/companies` | No | Lista todas las empresas registradas |
+| GET | `/api/companies` | API Key | Lista todas las empresas registradas |
 | POST | `/api/companies` | API Key | Registra una nueva empresa |
-| GET | `/api/contracts/:companyId` | No | Contratos asociados a una empresa |
+| GET | `/api/companies/:id` | API Key | Detalle de una empresa |
+| PATCH | `/api/companies/:id` | API Key | Actualizacion parcial de una empresa |
+| GET | `/api/contracts/:companyId` | API Key | Contratos de una empresa (paginado + filtros + resumen) |
+| GET | `/api/contracts/detail/:id` | API Key | Detalle de un contrato con su empresa |
+| GET | `/api/contracts/:companyId/departments` | API Key | Departamentos unicos para filtros |
+| GET | `/api/contracts/:companyId/locations` | API Key | Departamentos con sus municipios (selectores en cascada) |
+| GET | `/api/contracts/:companyId/municipios` | API Key | Municipios por departamento |
 | POST | `/api/trigger-scanner` | API Key | Dispara escaneo automatico de SECOP por empresa |
 | POST | `/api/search` | API Key | Busqueda manual ad-hoc en SECOP (I+II) con filtros |
 | GET | `/api/worker/tasks` | Worker Key | Obtiene tareas pendientes (hasta 5) |
 | PATCH | `/api/worker/tasks/:id/analysis` | Worker Key | Envia resultado del analisis IA |
-| GET | `/api/worker/health` | No | Health check para Docker |
+| GET | `/api/worker/health` | No | Health check del servicio API |
 
 **Caracteristicas tecnicas:**
 - Rate limiting: 100 requests/15 min por IP en `/api/`
 - Autenticacion por Bearer token con comparacion en tiempo constante
 - Logging estructurado con Pino
-- Validacion de schemas con Zod
-- CRON programable (por defecto cada hora) para escaneo SECOP automatico
+- Validacion de schemas con Zod (incluye `POST /api/search`)
+- CRON programable (por defecto cada hora) para **ingestión incremental** de SECOP II + SECOP I: solo trae registros nuevos desde la última ingesta (marca de agua en `IngestLog`), con dedup por `id_del_proceso`. Ver Fase 1.1 en `docs/PLAN_TIEMPO_REAL.md`.
+- Búsqueda manual desde DB enriquecida (opcional, `SEARCH_USE_DB=true`): sirve `/api/search` desde `ContractMatch` ingerido; si no hay datos o falla, cae a SODA en vivo (fallback automático).
+- El escaneo por empresa (`/api/trigger-scanner`) se mantiene como trigger manual (legacy).
 - Monitor de tareas estancadas: tasks en estado `PROCESSING` por mas de 1 hora se reinician a `PENDING_ANALYSIS`
 - WebSocket server en `/api/worker/stream` con autenticacion token y heartbeat cada 30s
 
@@ -134,6 +151,7 @@ Busqueda ad-hoc en SECOP (I + II) sin filtro de empresa. Combina 4 queries SODA 
 - Sort estricto por `fecha_de_publicacion_del` DESC (recientes primero)
 - Limite de timeout de SODA: 120s (`SODA_API_TIMEOUT`)
 - Manejo de rate-limit de SODA: respuesta 429 con mensaje amigable
+- **Cache en memoria de 15 min** (TtlCache, Fase 1.5): mismas queries + body no repiten el viaje a SODA (`SEARCH_CACHE_TTL_MS`, `SEARCH_CACHE_MAX`)
 
 **Filtros soportados:**
 - `municipio` + `department` (requiere seleccionar departamento primero en la UI)
@@ -149,17 +167,20 @@ Busqueda ad-hoc en SECOP (I + II) sin filtro de empresa. Combina 4 queries SODA 
 Dashboard de usuario para visualizar y gestionar resultados.
 
 **Paginas:**
-- `/login` - Autenticacion por credenciales (NextAuth)
-- `/` - Dashboard principal con tabla de contratos, analiticas y selector de empresas
+- `/login` - Autenticacion por credenciales (NextAuth) via `NEXTAUTH_ADMIN_EMAIL` / `NEXTAUTH_ADMIN_PASSWORD`
+- `/` - Dashboard principal (protegido por sesion) con tabla de contratos, analiticas y selector de empresas
 
 **Componentes principales:**
-- `DashboardClient` - Orquestador principal con polling cada 5s, sidebar + main layout
+- `DashboardClient` - Orquestador principal con polling cada 8s y tabs (Panel de Viabilidad / Busqueda Manual)
 - `CompanySelector` - Lista de empresas registradas (skeleton loading)
-- `AnalyticsSummary` - 4 tarjetas: Total, Viables, En Analisis, Descartadas
-- `ContractsTable` - Tabla con columnas: Entidad/Titulo, Presupuesto, Estado, Score, Acciones
-- `ContractDetailsModal` - Modal con 3 tabs: Resumen Ejecutivo, Analisis Legal, Analisis Financiero
+- `AnalyticsSummary` - 4 tarjetas: Licitaciones, Altamente Viables, En Analisis, Cierre Proximo
+- `ContractsTable` - Tabla con columnas: Licitacion, Presupuesto, Estado, Match, Score, Cierre, Acciones
+- `ContractDetailsModal` - Modal con tabs: Ruta de Presentacion, Resumen Ejecutivo, Analisis Legal, Analisis Financiero
 - `SearchPanel` - Busqueda manual en SECOP (I+II) con filtros por departamento/municipio, presupuesto, texto libre y casilla "Solo no vencidos"
-- `FilterBar` - Filtros laterales (estado, presupuesto, departamento, municipio, UNSPSC) con datos dinamicos de `colombia-territorial`
+- `FilterBar` - Filtros (estado, presupuesto, departamento, municipio) con datos dinamicos de la API
+- `OnboardingWizard` - Alta guiada de empresas en 4 pasos (datos basicos, UNSPSC, ubicacion/finanzas, confirmacion)
+- `DashboardHeader` - Header con logo, usuario y logout
+- `ToastContainer` - Notificaciones toast
 
 **Busqueda Manual (SearchPanel):**
 - Selector encadenado Departamento → Municipio (datos oficiales via paquete `colombia-territorial`)
@@ -181,6 +202,7 @@ Dashboard de usuario para visualizar y gestionar resultados.
 - shadcn/ui (New York style): Button, Card, Badge, Avatar, Dialog, Tabs, Table, Skeleton, DropdownMenu
 - TanStack React Query v5 para fetching con polling
 - NextAuth v4 con estrategia JWT
+- Credenciales de acceso del dashboard configuradas via `NEXTAUTH_ADMIN_EMAIL` / `NEXTAUTH_ADMIN_PASSWORD` (no hardcodeadas)
 
 ### 3. Worker Python (CrewAI + LLM)
 
@@ -247,7 +269,7 @@ Pliego (Markdown) + Perfil de Empresa
 
 ### 4. Base de Datos (PostgreSQL + Prisma ORM)
 
-Dos modelos principales:
+El schema de Prisma usa **PostgreSQL** como provider. Modelos principales:
 
 **Company**
 | Campo | Tipo | Descripcion |
@@ -263,7 +285,11 @@ Dos modelos principales:
 | minBudget | Float | Presupuesto minimo (default: 0) |
 | maxBudget | Float | Presupuesto maximo (default: 9,999,999,999) |
 | certifications | String | Certificaciones en JSON array |
+| description | String | Resumen de actividades (default: "") |
+| website | String | Sitio web (default: "") |
 | contracts | ContractMatch[] | Relacion 1:N |
+| users | User[] | Relacion 1:N |
+| createdAt / updatedAt | DateTime | Timestamps |
 
 **ContractMatch**
 | Campo | Tipo | Descripcion |
@@ -275,24 +301,38 @@ Dos modelos principales:
 | title | String | Descripcion del contrato |
 | budget | Float | Presupuesto oficial |
 | urlPliego | String | URL del proceso en SECOP |
-| status | String | PENDING_ANALYSIS / PROCESSING / VIABLE / REJECTED |
+| status | String | PENDING_ANALYSIS / PROCESSING / VIABLE / REJECTED / ERROR |
 | phase | String | Fase del proceso (Presentacion de oferta, etc.) |
 | contractStatus | String | Estado del procedimiento en SECOP (Publicado, Convocado, etc.) |
 | department | String | Departamento de la entidad |
 | region | String | Region |
-| categoryCode | String | Codigo UNSPSC |
+| categoryCode / categoryName | String | Codigo UNSPSC |
+| contactName / contactPhone / contactEmail | String | Datos de contacto de la entidad |
+| estimatedDuration | String | Duracion estimada del contrato |
 | publishedAt | DateTime? | Fecha de publicacion del proceso |
 | closingDate | DateTime? | Fecha de cierre/recepcion de ofertas |
 | presentationDeadline | DateTime? | Plazo de presentacion |
+| matchScore | Int | Score de coincidencia con el perfil (0-100) |
 | viabilityScore | Int? | Score 0-100 |
+| presentationRoute | String? | Ruta de presentacion (JSON) |
 | reportLegal | String? | Reporte legal (JSON) |
 | reportFinancial | String? | Reporte financiero (JSON) |
 | reportFinal | String? | Veredicto final (JSON) |
+| errorMessage | String | Mensaje de error del pipeline IA |
+| retryCount | Int | Intentos de analisis fallidos |
+| source | String | Origen: `secop_ii` \| `secop_i_procesos` \| `secop_i_integrado` (Fase 1.2) |
+| awarded | Boolean | Adjudicado (cruzado con dataset `jbjy-vk9h`) |
+| awardedProveedor | String | Proveedor adjudicado (si aplica) |
+| valorAdjudicado | Float? | Valor del contrato adjudicado (si aplica) |
+| rawSodaData | String | JSON crudo del registro SODA |
 | notified | Boolean | Notificacion enviada? |
+| createdAt / updatedAt | DateTime | Timestamps |
 
 > **Nota:** La busqueda manual (`/api/search`) retorna campos adicionales efimeros no persistidos: `isExpired`, `isOpen`, `awarded`, `modality`, `source`. El modelo Prisma `ContractMatch` se mantiene para el scanner automatico por empresa y el pipeline de IA.
 
-**Indices:** `@@unique([companyId, secopId])`, `@@index([status])`, `@@index([createdAt])`, `@@index([companyId])`
+El schema tambien define los modelos `User` (autenticacion, sin uso activo aun), `ScanRun` (registro de ejecuciones del scanner, sin uso activo aun) e `IngestLog` (marca de agua de la ingestion incremental SECOP II, Fase 1.1).
+
+**Indices:** `@@unique([companyId, secopId])`, `@@index([status])`, `@@index([createdAt])`, `@@index([companyId])`, `@@index([closingDate])`, `@@index([matchScore])`
 
 ### 5. Paquetes Compartidos
 
@@ -319,15 +359,17 @@ Dos modelos principales:
                    |                   |
             Analisis exitoso     Error/Fallo
                    |                   |
-                   v                   v
-            +-----------+      +------------+
-            |  VIABLE   |      |  REJECTED  |
-            +-----------+      +------------+
-                   |
-            (score >= umbral)
-                   |
-                   v
-            Notificacion (opcional)
+             +-----+-----+             v
+             |           |      +------------+
+             v           v      |   ERROR    |
+        +--------+ +--------+   +------------+
+        | VIABLE | | REJECTED|
+        +--------+ +--------+
+             |
+      (score >= umbral)
+             |
+             v
+      Notificacion (opcional)
 
   Stuck task recovery: PROCESSING > 1 hora -> PENDING_ANALYSIS
 ```
@@ -339,17 +381,17 @@ Dos modelos principales:
 | Capa | Tecnologia | Version |
 |------|-----------|---------|
 | Frontend | Next.js (App Router) | 15 |
-| Frontend | React | 19 |
+| Frontend | React | 18 |
 | Frontend | Tailwind CSS | 3.4 |
 | Frontend | TanStack React Query | 5 |
 | Frontend | NextAuth | 4 |
 | Frontend | shadcn/ui | Radix-based |
-| Backend API | Node.js / Express | 22 / 4 |
+| Backend API | Node.js / Express | 20+ / 4 |
 | Backend API | TypeScript | 5 |
-| Backend API | Prisma ORM | Latest |
-| Backend API | Zod (validation) | Latest |
-| Backend API | Pino (logging) | Latest |
-| Backend API | ws (WebSocket) | Latest |
+| Backend API | Prisma ORM | 5 |
+| Backend API | Zod (validation) | 4 |
+| Backend API | Pino (logging) | 10 |
+| Backend API | ws (WebSocket) | 8 |
 | Worker | Python | 3.12 |
 | Worker | CrewAI | Latest |
 | Worker | Playwright | Latest |
@@ -362,6 +404,7 @@ Dos modelos principales:
 | Database | PostgreSQL | 16 Alpine |
 | Containerizacion | Docker Compose | 3.8 |
 | Testing (API) | Vitest + Supertest | Latest |
+| Testing (Frontend) | Vitest | Latest |
 
 ---
 
@@ -369,7 +412,7 @@ Dos modelos principales:
 
 ### Requisitos
 
-- Node.js >= 22
+- Node.js >= 20 (Next.js 15 requiere >= 18.18)
 - Python >= 3.12
 - Docker + Docker Compose (opcional, para PostgreSQL)
 - Ollama (opcional, para LLM local) con modelo `deepseek-r1:8b`
@@ -405,6 +448,8 @@ NEXT_PUBLIC_API_URL=http://localhost:3001
 NEXT_PUBLIC_API_KEY=dev-key-change-in-production
 NEXTAUTH_SECRET=your-secret
 NEXTAUTH_URL=http://localhost:3000
+NEXTAUTH_ADMIN_EMAIL=admin@pliegonaut.com
+NEXTAUTH_ADMIN_PASSWORD=change-this-password
 
 # SECOP / SODA (datos.gov.co)
 SODA_API_URL=https://www.datos.gov.co/resource/p6dx-8zbt.json
@@ -486,6 +531,8 @@ secop-agent-platform/
           health.test.ts          # Tests de health check
           routes.test.ts          # Tests de rutas completas
           validate.test.ts        # Tests de validacion Zod
+          contracts.test.ts       # Tests de rutas de contratos y filtros
+          scanner.test.ts         # Tests de busqueda manual SODA
 
     web/                          # Frontend (Next.js 15)
       src/
@@ -498,16 +545,21 @@ secop-agent-platform/
           api/auth/[...nextauth]/route.ts  # NextAuth handler
         components/
           dashboard/
-            AnalyticsSummary.tsx  # Tarjetas de resumen (Total/Viables/etc)
+            AnalyticsSummary.tsx  # Tarjetas de resumen (Licitaciones/Viables/etc)
             CompanySelector.tsx   # Selector de empresas
-            ContractDetailsModal.tsx  # Modal con 3 tabs de analisis
+            ContractDetailsModal.tsx  # Modal con tabs (Ruta/Resumen/Legal/Financiero)
             ContractsTable.tsx    # Tabla de contratos con estados
             DashboardClient.tsx   # Orquestador del dashboard
             DashboardHeader.tsx   # Header con avatar y logout
+            FilterBar.tsx         # Filtros de estado/presupuesto/ubicacion
+            OnboardingWizard.tsx  # Alta guiada de empresas en 4 pasos
+            SearchPanel.tsx       # Busqueda manual SECOP I+II
           ui/                     # shadcn/ui components
+          ToastContainer.tsx      # Notificaciones toast
         lib/
-          api.ts                  # Cliente HTTP (fetchCompanies, fetchContracts, triggerScanner)
-          auth.ts                 # Configuracion NextAuth (CredentialsProvider)
+          api.ts                  # Cliente HTTP (fetchCompanies, fetchContracts, triggerScanner, manualSearch)
+          auth.ts                 # Configuracion NextAuth (CredentialsProvider desde env)
+          colombia.ts             # Departamentos/municipios via colombia-territorial
           utils.ts                # cn(), formatCurrency()
 
     worker-python/                # Worker IA (Python)
@@ -515,7 +567,8 @@ secop-agent-platform/
       agentes_pliego.py           # Sistema de agentes CrewAI (Legal, Financial, Judge)
       descargador_secop.py        # Descarga de PDFs con Playwright
       ocr_marker.py               # OCR: marker-pdf (GPU) o pdfplumber
-      rag_pliego.py               # RAG con ChromaDB para filtrado contextual
+      generador_ruta.py           # Ruta de presentacion paso a paso (si viable)
+      rag_pliego.py               # RAG con ChromaDB (definido, no integrado aun)
       requirements.txt            # Dependencias Python
       documentos/
         pdf_crudos/               # PDFs descargados
@@ -523,10 +576,11 @@ secop-agent-platform/
 
   packages/
     database/                     # Prisma Client singleton
-      prisma/schema.prisma        # Schema: Company, ContractMatch
+      prisma/schema.prisma        # Schema: Company, ContractMatch, User, ScanRun
       index.ts                    # Cliente Prisma con caching global
     types/                        # Tipos TypeScript compartidos
 
+  .dockerignore                   # Excluye .env, node_modules, .venv de las imagenes
   docker-compose.yml              # Infraestructura: postgres + api + web + worker
   Dockerfile                      # API Dockerfile (multi-stage)
   docker-entrypoint.sh            # Entrypoint: espera DB, prisma push, exec CMD
@@ -560,7 +614,7 @@ Tarea entrante (ContractMatch):
       -> Retorna texto completo en Markdown
 
   FASE C - Analisis IA:
-    RAG (opcional):
+    RAG (opcional, definido en rag_pliego.py pero aun no conectado al worker):
       ChromaDB filtra chunks relevantes para legal y financiero
 
     CrewAI.crear_equipo_analisis(pliego_markdown, perfil_empresa):
@@ -583,11 +637,15 @@ Tarea entrante (ContractMatch):
         - resumen_ejecutivo >= 10 chars
         - consistencia viable/causales_rechazo
 
+    Ruta de presentacion (si viable):
+      generador_ruta.py -> presentationRoute (pasos, plazos, documentos, advertencias)
+
     Envio:
       PATCH /api/worker/tasks/{id}/analysis
-        status: VIABLE | REJECTED
+        status: VIABLE | REJECTED | ERROR
         viabilityScore: 0-100
-        reportLegal, reportFinancial, reportFinal
+        reportLegal, reportFinancial, reportFinal, presentationRoute
+        errorMessage (si ERROR)
 ```
 
 ### Configuracion de LLM
@@ -623,25 +681,31 @@ else:
 # Top-K: 15 chunks legales, 10 chunks financieros
 ```
 
+> **Estado actual:** el RAG esta definido (`rag_pliego.py`) pero **aun no esta integrado** en el flujo de `worker.py`; el analisis CrewAI recibe el pliego completo en Markdown.
+
 ---
 
 ## Testing
 
 ```bash
-# Tests de la API
+# Tests de la API (43 tests)
 cd apps/api
 npx vitest run
 
-# Tests del frontend
+# Tests del frontend (1 test)
 cd apps/web
 npx vitest run
 ```
 
-Cobertura:
+Cobertura (API):
 - Autenticacion: tokens validos/invalidos, admin vs worker, cross-token rejection
-- Validacion Zod: datos de empresa validos/invalidos, datos de analisis, valores default
-- Rutas: CRUD empresas, listado de contratos, workers tasks, envio de analisis, escaneo, NIT duplicado, conflictos de estado, 404
+- Validacion Zod: datos de empresa validos/invalidos, datos de analisis, valores default, schema de actualizacion parcial
+- Rutas: CRUD empresas, listado de contratos, filtros (presupuesto, municipio, search), workers tasks, envio de analisis, escaneo, NIT duplicado, conflictos de estado, 404
+- Busqueda manual SODA: dual-query `$q`, filtros `$where` (searchText, presupuesto, UNSPSC, estado), rate-limit 429
 - Health check: response status ok, uptime, timestamp
+
+Cobertura (Frontend):
+- Smoke test de importacion del dashboard (resolucion del alias `@/`)
 
 ---
 
@@ -653,8 +717,12 @@ Cobertura:
 - Docker: Healthcheck de PostgreSQL con `pg_isready`
 
 ### Logging
-- API: Pino con formato estructurado (pretty-print en desarrollo)
-- Worker: Logs a stdout con prefijos `[FASE B1]`, `[FASE C]`, `[WS]`, `[VALIDACION]`
+- API: Pino con formato estructurado a **stdout + archivo** (`LOG_FILE`, default `/tmp/pliegonaut-api.log`; pretty-print en desarrollo, JSON en producción)
+- Worker: Logs a stdout con prefijos `[FASE B1]`, `[FASE B2]`, `[FASE C]`, `[WORKER]`, `[WS]`, `[INFO]`
+
+### Alertas (Fase 1.6)
+- **Webhook externo** (`ALERT_WEBHOOK_URL`, p. ej. Slack/Teams) tras **3 ingestas consecutivas fallidas**; best-effort, no rompe el flujo
+- Logs clave de ingestión: `[INGEST] Dataset X: watermark=...`, `[INGEST] ... sin cambios desde la última ingesta`, `[INGEST] ALERTA: N ingestas consecutivas fallaron`
 
 ### Recuperacion Automatica
 - Tareas estancadas en `PROCESSING` por > 1 hora se reinician automaticamente a `PENDING_ANALYSIS`

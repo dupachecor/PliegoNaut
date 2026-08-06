@@ -30,6 +30,23 @@ export const companySchema = z.object({
   maxBudget: z.number().nonnegative().optional().default(9999999999),
 })
 
+export const companyUpdateSchema = z.object({
+  name: z.string().min(1, 'Nombre requerido').optional(),
+  nit: z.string().min(1, 'NIT requerido').optional(),
+  workingCapital: z.number().nonnegative().optional(),
+  liquidity: z.number().nonnegative().optional(),
+  unspscCodes: z.string().min(1).optional(),
+  regions: z.string().optional(),
+  emails: z.string().optional(),
+  certifications: z.string().optional(),
+  description: z.string().optional(),
+  website: z.string().optional(),
+  minBudget: z.number().nonnegative().optional(),
+  maxBudget: z.number().nonnegative().optional(),
+}).refine((data) => Object.keys(data).length > 0, {
+  message: 'Debe enviar al menos un campo para actualizar',
+})
+
 export const analysisSchema = z.object({
   status: z.enum(['VIABLE', 'REJECTED', 'ERROR']),
   viabilityScore: z.number().int().min(0).max(100),

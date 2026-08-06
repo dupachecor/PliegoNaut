@@ -48,6 +48,10 @@ export interface ContractMatch {
   reportFinal: string | null
   errorMessage: string
   retryCount: number
+  source?: string
+  awarded?: boolean
+  awardedProveedor?: string
+  valorAdjudicado?: number | null
   rawSodaData: string
   notified: boolean
   createdAt: string

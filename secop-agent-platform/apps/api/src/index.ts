@@ -2,17 +2,16 @@ import express from 'express';
 import cors from 'cors';
 import helmet from 'helmet';
 import rateLimit from 'express-rate-limit';
-import cron from 'node-cron';
-import { runDailySecopScanner } from './services/sodaScanner';
+import { startSodaIngestCron } from './cron/sodaIngest';
 import { startStuckTasksMonitor } from './cron/stuckTasks';
 
-import pino from 'pino';
 import pinoHttp from 'pino-http';
 
 import { prisma } from '@pliegonaut/database';
 
 import { AppError } from './lib/errors';
-import { createWsServer, broadcastNewTask } from './lib/wsServer';
+import { createLogger } from './lib/logger';
+import { createWsServer } from './lib/wsServer';
 
 import healthRoutes from './routes/health';
 import companiesRoutes from './routes/companies';
@@ -20,12 +19,7 @@ import contractsRoutes from './routes/contracts';
 import scannerRoutes from './routes/scanner';
 import workerRoutes from './routes/worker';
 
-const logger = pino({
-  level: process.env.LOG_LEVEL || 'info',
-  transport: process.env.NODE_ENV !== 'production'
-    ? { target: 'pino-pretty', options: { colorize: true } }
-    : undefined,
-});
+const logger = createLogger('pliegonaut-api');
 
 const app = express();
 const port = parseInt(process.env.PORT || '3001', 10);
@@ -59,19 +53,8 @@ app.use(contractsRoutes);
 app.use(scannerRoutes);
 app.use(workerRoutes);
 
-// Cron programado
-cron.schedule(CRON_SCHEDULE, async () => {
-  logger.info('[CRON] Iniciando escaneo SECOP programado');
-  try {
-    await runDailySecopScanner({
-      info: (msg: string, ...args: any[]) => logger.info({ source: 'soda' }, msg, ...args),
-      error: (msg: string, ...args: any[]) => logger.error({ source: 'soda' }, msg, ...args),
-    });
-    broadcastNewTask();
-  } catch (err) {
-    logger.error({ err }, '[CRON] Error en escaneo programado');
-  }
-});
+// Cron de ingestión incremental SECOP II (Fase 1.1)
+startSodaIngestCron();
 
 // Monitor de tareas estancadas
 startStuckTasksMonitor();

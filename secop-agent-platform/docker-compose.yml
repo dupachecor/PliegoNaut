@@ -37,6 +37,9 @@ services:
     build:
       context: .
       dockerfile: apps/web/Dockerfile.web
+      args:
+        NEXT_PUBLIC_API_URL: http://localhost:3001
+        NEXT_PUBLIC_API_KEY: ${NEXT_PUBLIC_API_KEY:-dev-key-change-in-production}
     ports:
       - "3000:3000"
     env_file: .env

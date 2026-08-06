@@ -21,6 +21,11 @@ import {
 } from "lucide-react";
 import { formatCurrency } from "@/lib/utils";
 
+// SECOP I (Procesos f789-7hwg o Integrado rpmr-utcd): no expone fechas de cierre fiables;
+// el estado y la modalidad se muestran de forma distinta a SECOP II.
+const isSecop1Source = (source: string) =>
+  source === "secop_i_procesos" || source === "secop_i_integrado" || source === "secop_integrado";
+
 interface Props {
   companies: Company[];
   selectedCompanyId: string | null;
@@ -236,8 +241,8 @@ export function SearchPanel({ companies, selectedCompanyId, onSelectCompany }: P
                             <MapPin className="w-3 h-3" />
                             {r.department}
                           </span>
-                          {/* Fecha de publicación - siempre gris */}
-                          {r.source === "secop_integrado" ? (
+                           {/* Fecha de publicación - siempre gris */}
+                           {isSecop1Source(r.source) ? (
                             r.modality ? (
                               <span className="flex items-center gap-1 text-xs text-muted-foreground">
                                 <Tag className="w-3 h-3" />
@@ -256,7 +261,7 @@ export function SearchPanel({ companies, selectedCompanyId, onSelectCompany }: P
                              <span className="flex items-center gap-1 text-xs text-red-500">
                                <Clock className="w-3 h-3 text-red-500" />
                                <span>
-                                 {r.source === "secop_integrado"
+                                 {isSecop1Source(r.source)
                                    ? "Vencido / Cerrado"
                                    : r.closingDate
                                      ? `Vencido: ${new Date(r.closingDate).toLocaleDateString("es-CO")}`
@@ -282,7 +287,7 @@ export function SearchPanel({ companies, selectedCompanyId, onSelectCompany }: P
                            ) : (
                              <span className="flex items-center gap-1 text-xs text-green-600">
                                <Clock className="w-3 h-3 text-green-600" />
-                               <span>{r.source === "secop_integrado" ? r.status || "Activo" : "Activo"}</span>
+                               <span>{isSecop1Source(r.source) ? r.status || "Activo" : "Activo"}</span>
                              </span>
                            )}
                         </div>

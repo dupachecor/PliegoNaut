@@ -40,6 +40,19 @@ Implementar 3 fases de creciente riesgo y complejidad, validando cada una antes 
 
 **Objetivo:** reducir el lag de detección dentro del día (no elimina el lag original de CCE) y enriquecer con 3 datasets cruzados.
 
+> **Estado de implementación (2026-08-05):**
+> | Sub-fase | Estado |
+> |---|---|
+> | 1.1 Pull incremental con watermark | ✅ Implementado |
+> | 1.2 Combinar datasets con `source` | ✅ Implementado (incluye `rpmr-utcd` como `secop_i_integrado`) |
+> | 1.3 App Token Socrata | ✅ Implementado y verificado (token activo en `.env`) |
+> | 1.4 Migración `IngestLog` | ✅ SQL en `migrations/0001_init`; aplicada en PostgreSQL 16 local |
+> | 1.5 Refactor `/api/search` | ✅ Caché + `source` + búsqueda DB (`SEARCH_USE_DB=true` activo, verificado <0.1s) |
+> | 1.6 Monitoreo y alertas | ✅ Implementado (logs `[INGEST]` + webhook tras 3 fallos) |
+> | 1.7 Criterios de salida | ⏳ Solo falta observación de 24h del cron y medición del lag |
+
+**Pendiente para cerrar Fase 1:** dejar el cron corriendo 24h y confirmar `IngestLog`/lag; considerar si el volumen de matches de `secop_i_integrado` (~4.4k para TechNaut) es aceptable o se filtra más.
+
 ### 1.1 Sub-fase: Pull incremental con cursor de marca de agua
 
 **Qué:** Reemplazar la lógica del scanner actual (`sodaScanner.ts`) por una ingestión incremental que solo trae registros nuevos desde la última ingesta.
@@ -68,12 +81,17 @@ Implementar 3 fases de creciente riesgo y complejidad, validando cada una antes 
 - **Contratos** (`jbjy-vk9h`) — para adjudicaciones: `proveedor_adjudicado`, `valor_del_contrato`.
 - **SECOP Integrado** (`rpmr-utcd`) — para SECOP I (alcaldías).
 - Etiquetar cada registro con `source` (`secop_ii` | `secop_i_integrado` | `secop_i_procesos`).
-- Dedup estricto por `id_del_proceso` (mantener la fuente más fresca).
+- Dedup estricto por `id_del_proceso` (mantener la fuente más fresca: `secop_ii` > `secop_i_procesos` > `secop_i_integrado`).
+
+> **Nota de implementación:** `rpmr-utcd` carece de fecha utilizable como watermark para procesos abiertos
+> (solo fecha de contrato firmado). Se ingesta con un `$where` fijo por estado
+> (`upper(estado_del_proceso) = 'CONVOCADO'`) y el dedup por `id_del_proceso` evita duplicados entre
+> ejecuciones. Activable con `INGEST_SECOP_INTEGRADO_ENABLED`.
 
 **Verificación:**
-- [ ] Búsqueda manual muestra `source` en cada resultado
-- [ ] Registros de SECOP I aparecen (alcaldías)
-- [ ] No hay duplicados entre datasets
+- [x] Búsqueda manual muestra `source` en cada resultado (implementado y testeado)
+- [x] Registros de SECOP I aparecen (alcaldías) — verificado en `/api/search` con datos reales
+- [x] No hay duplicados entre datasets (dedup por `id_del_proceso` con tests)
 
 ### 1.3 Sub-fase: App Token Socrata
 
@@ -86,8 +104,9 @@ Implementar 3 fases de creciente riesgo y complejidad, validando cada una antes 
 4. Pasar como header `X-App-Token` en `sodaClient` (`sodaScanner.ts:9`).
 
 **Verificación:**
-- [ ] Header `X-App-Token` presente en requests
-- [ ] Rate limit aumentado (verificar headers `ratelimit-remaining` en logs)
+- [x] Header `X-App-Token` presente en requests (aplicado en ingest, `/api/search` y scanner legacy)
+- [x] App Token válido: `curl` con header responde `200 OK` y `/api/search` trae datos reales
+- [ ] Rate limit aumentado (datos.gov.co no expone `ratelimit-remaining`; con token no se throttlea por IP)
 
 ### 1.4 Sub-fase: Schema DB — modelo `IngestLog`
 
@@ -108,8 +127,13 @@ model IngestLog {
 
 **Migración:** `npx prisma migrate dev --name add_ingestlog`
 
+> **Nota de implementación:** la migración se generó offline con `prisma migrate diff --from-empty
+> --to-schema-datamodel` en `packages/database/prisma/migrations/0001_init/migration.sql` (sin necesidad
+> de DB en ejecución). `docker-entrypoint.sh` ahora usa `npx prisma migrate deploy`.
+
 **Verificación:**
-- [ ] Migración aplica sin errores
+- [x] SQL de migración generado y versionado (0001_init)
+- [ ] Migración aplicada sobre una DB PostgreSQL real (pendiente: no hay DB local)
 - [ ] `IngestLog` se actualiza tras cada cron
 - [ ] Consulta `prisma.ingestLog.findUnique()` funciona
 
@@ -119,13 +143,15 @@ model IngestLog {
 
 **Estrategia:**
 - Conservar la lógica de las 4 queries actuales como fallback directo a SODA.
-- Agregar `source` a la respuesta (ya hecho parcialmente).
-- Considerar caché de resultados por 15 min para reducir carga en SODA.
+- Agregar `source` a la respuesta (ya hecho).
+- **Implementado:** caché de resultados de 15 min (`TtlCache`, `SEARCH_CACHE_TTL_MS` / `SEARCH_CACHE_MAX`).
+- **Implementado:** búsqueda desde la DB enriquecida con `SEARCH_USE_DB=true` — lee `ContractMatch`
+  ingerido (dedup por `secopId`, mismo shape de respuesta); si no hay datos o falla, cae a SODA en vivo.
 
 **Verificación:**
-- [ ] Búsqueda manual responde < 10s con datos enriquecidos
-- [ ] `source` aparece en todos los resultados
-- [ ] Caché (si se implanta) invalida correctly
+- [x] `source` aparece en todos los resultados
+- [x] Caché implementada y testeada (2ª búsqueda no llama a SODA)
+- [ ] Búsqueda manual responde < 10s con datos enriquecidos (pendiente: requiere DB con datos ingeridos)
 
 ### 1.6 Sub-fase: Monitoreo y alertas
 
@@ -139,15 +165,18 @@ model IngestLog {
 - `[INGEST] Error: rate limit, reintentando en 60s`
 
 **Verificación:**
-- [ ] Logs legibles en `/tmp/pliegonaut-api.log`
-- [ ] Alerta visible si 3 ingestas consecutivas fallan
+- [x] Logs estructurados en stdout + `/tmp/pliegonaut-api.log` (Pino, `LOG_FILE`)
+- [x] Alerta webhook tras 3 ingestas consecutivas fallidas (con tests: `sodaIngestCron.test.ts`, `alert.test.ts`)
 
 ### 1.7 Criterios de salida Fase 1
-- [ ] Cron hourly ingesta sin errores en 24h de observación
-- [ ] Búsqueda manual responde < 10s con datos enriquecidos de 3 datasets
-- [ ] App Token configurado y rate-limit sin tocarlo
-- [ ] Lag de detección (no publicación) < 1h desde que CCE actualiza el dataset
-- [ ] `IngestLog` persiste correctamente
+- [ ] Cron hourly ingesta sin errores en 24h de observación (verificado 2 ejecuciones manuales sin errores; resta la observación de 24h)
+- [x] Búsqueda manual responde < 10s con datos enriquecidos — verificado: 0.045s–0.1s desde DB con `SEARCH_USE_DB=true` (vs ~45s contra SODA)
+- [x] App Token configurado y sin throttling por IP
+- [ ] Lag de detección (no publicación) < 1h desde que CCE actualiza el dataset (pendiente observación del cron hourly)
+- [x] `IngestLog` persiste correctamente — verificado: 4 datasets con status OK y watermark avanzado (p6dx 2026-08-01, f789 2026-08-04, jbjy 2026-07-29)
+
+> **Verificado 2026-08-05:** instalado PostgreSQL 16 local (sin Docker), migración `0001_init` aplicada,
+> ingesta real contra SODA con App Token: 11.633 procesos únicos, 4.537 matches para TechNaut, **0 duplicados**.
 
 **Tiempo estimado:** 2-3 días
 **Riesgo:** bajo (API que ya usamos)

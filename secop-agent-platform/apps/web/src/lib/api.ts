@@ -1,9 +1,12 @@
 import type { Company, ContractMatch, PaginatedResponse, ContractFilters, LocationGroup } from "@pliegonaut/types";
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:3001";
-const API_KEY = process.env.NEXT_PUBLIC_API_KEY || "dev-key-change-in-production";
+const API_KEY = process.env.NEXT_PUBLIC_API_KEY || "";
 
 async function request<T>(path: string, options?: RequestInit): Promise<T> {
+  if (!API_KEY) {
+    throw new Error("NEXT_PUBLIC_API_KEY no está configurada en el frontend");
+  }
   const res = await fetch(`${API_URL}${path}`, {
     headers: {
       "Content-Type": "application/json",
@@ -83,7 +86,7 @@ export function createCompany(data: Omit<Company, "id" | "createdAt" | "updatedA
 
 export function updateCompany(id: string, data: Partial<Company>) {
   return request<Company>(`/api/companies/${id}`, {
-    method: "PUT",
+    method: "PATCH",
     body: JSON.stringify(data),
   });
 }

@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import { prisma } from '@pliegonaut/database';
 import { requireApiKey } from '../middleware/auth';
-import { validate, companySchema } from '../middleware/validate';
+import { validate, companySchema, companyUpdateSchema } from '../middleware/validate';
 
 const router = Router();
 
@@ -32,7 +32,7 @@ router.get('/api/companies/:id', requireApiKey, async (req, res) => {
   res.json(company);
 });
 
-router.put('/api/companies/:id', requireApiKey, validate(companySchema), async (req, res) => {
+router.patch('/api/companies/:id', requireApiKey, validate(companyUpdateSchema), async (req, res) => {
   try {
     const updated = await prisma.company.update({
       where: { id: req.params.id },

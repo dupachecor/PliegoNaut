@@ -2,19 +2,22 @@ import { Server as HttpServer } from 'http';
 import { WebSocketServer, WebSocket } from 'ws';
 import { IncomingMessage } from 'http';
 import type { Logger } from 'pino';
+import { constantTimeCompare } from '../middleware/auth';
 
 let wss: WebSocketServer | null = null;
 
-const WORKER_API_KEY = process.env.WORKER_API_KEY || 'worker-dev-key-change';
+const WORKER_API_KEY = process.env.WORKER_API_KEY;
 
 function authenticate(req: IncomingMessage): boolean {
+  if (!WORKER_API_KEY) return false;
+
   const url = new URL(req.url || '', 'http://localhost');
   const token = url.searchParams.get('token');
-  if (token === WORKER_API_KEY) return true;
+  if (token !== null && constantTimeCompare(token, WORKER_API_KEY)) return true;
 
   const auth = req.headers['authorization'] || '';
   const match = auth.match(/^Bearer\s+(.+)$/);
-  return match?.[1] === WORKER_API_KEY;
+  return match ? constantTimeCompare(match[1], WORKER_API_KEY) : false;
 }
 
 function heartbeat(this: WebSocket) {

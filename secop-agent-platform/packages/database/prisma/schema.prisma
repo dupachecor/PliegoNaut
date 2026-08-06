@@ -1,5 +1,5 @@
 datasource db {
-  provider = "sqlite"
+  provider = "postgresql"
   url      = env("DATABASE_URL")
 }
 
@@ -70,6 +70,10 @@ model ContractMatch {
   reportFinal           String?
   errorMessage          String    @default("")
   retryCount            Int       @default(0)
+  source                String    @default("secop_ii") // secop_ii | secop_i_procesos | secop_i_integrado
+  awarded               Boolean   @default(false)      // adjudicado (cruzado con jbjy-vk9h)
+  awardedProveedor      String    @default("")         // proveedor_adjudicado
+  valorAdjudicado       Float?                         // valor_del_contrato adjudicado
   rawSodaData           String    @default("")
   notified              Boolean   @default(false)
   createdAt             DateTime  @default(now())
@@ -92,4 +96,16 @@ model ScanRun {
   companiesScanned Int   @default(0)
   errors        String   @default("")
   triggeredBy   String   @default("cron")
+}
+
+model IngestLog {
+  id             String   @id @default(uuid())
+  datasetId      String   // p6dx-8zbt, rpmr-utcd, etc.
+  lastIngestAt   DateTime @default(now())
+  lastSeenPub    DateTime // marca de agua para pulls incrementales
+  recordsFetched Int      @default(0)
+  status         String   @default("OK") // OK | ERROR
+  errors         String   @default("")
+
+  @@unique([datasetId])
 }

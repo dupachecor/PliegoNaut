@@ -2,9 +2,146 @@ import { Router } from 'express';
 import { runDailySecopScanner } from '../services/sodaScanner';
 import { broadcastNewTask } from '../lib/wsServer';
 import { requireApiKey } from '../middleware/auth';
+import { validate, searchSchema } from '../middleware/validate';
+import { TtlCache } from '../lib/ttlCache';
+import { prisma } from '@pliegonaut/database';
 import type { Logger } from 'pino';
 
 const router = Router();
+
+// Caché en memoria de 15 min para la búsqueda manual (reduce carga en SODA).
+// Fase 1.5 del PLAN_TIEMPO_REAL.md. Sin DB; expiración lazy + evicción por tamaño.
+export const searchCache = new TtlCache<string, any>(
+  parseInt(process.env.SEARCH_CACHE_TTL_MS || `${15 * 60 * 1000}`, 10),
+  parseInt(process.env.SEARCH_CACHE_MAX || '200', 10),
+);
+
+export function clearSearchCache() {
+  searchCache.clear();
+}
+
+// Fase 1.5: sirve la búsqueda manual desde la DB enriquecida (ContractMatch ingerido por el
+// cron) cuando SEARCH_USE_DB=true. Si no hay resultados o falla, el route cae a SODA en vivo.
+function isSearchUseDb(): boolean {
+  return process.env.SEARCH_USE_DB === 'true';
+}
+
+function normalize(text: string): string {
+  if (!text) return '';
+  return text
+    .toUpperCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/[^A-Z0-9\s]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function escapeSoql(val: string): string {
+  return val.replace(/'/g, "''");
+}
+
+async function searchEnrichedDb(body: any, log: Logger): Promise<{ results: any[]; total: number }> {
+  const { unspscCodes, minBudget, maxBudget, department, municipio, status, searchText } = body;
+
+  const activeStatuses = ['Convocado', 'Presentación de oferta', 'Abierto', 'Publicado'];
+  const where: any = {
+    // contractStatus guarda el estado del procedimiento en SECOP (no el estado de análisis)
+    contractStatus: { in: status && status.length > 0 ? status : activeStatuses },
+  };
+
+  if (minBudget !== undefined) where.budget = { gte: minBudget };
+  if (maxBudget !== undefined) where.budget = { ...where.budget, lte: maxBudget };
+  if (department) where.department = { contains: department };
+  if (municipio) where.region = { contains: municipio };
+
+  const orClauses: any[] = [];
+  if (searchText) {
+    orClauses.push({ title: { contains: searchText } }, { entity: { contains: searchText } });
+  }
+  if (unspscCodes && unspscCodes.length > 0) {
+    orClauses.push(...unspscCodes.map((code: string) => ({ categoryCode: { contains: code } })));
+  }
+  if (orClauses.length > 0) where.OR = orClauses;
+
+  const rows = await prisma.contractMatch.findMany({
+    where,
+    orderBy: [{ publishedAt: 'desc' }, { matchScore: 'desc' }],
+    take: 200,
+  });
+
+  // Dedup por secopId: un proceso puede existir para varias empresas
+  const byId = new Map<string, any>();
+  for (const r of rows) {
+    if (!r.secopId || byId.has(r.secopId)) continue;
+    byId.set(r.secopId, r);
+  }
+
+  const now = new Date();
+  let results = [...byId.values()].map((r: any) => {
+    const source = r.source || 'secop_ii';
+    return {
+      secopId: r.secopId,
+      entity: r.entity,
+      title: r.title,
+      budget: r.budget || 0,
+      urlPliego: r.urlPliego,
+      phase: r.phase || '',
+      status: r.contractStatus || r.status || '',
+      department: r.department || '',
+      municipio: r.region || '',
+      publishedAt: r.publishedAt ? r.publishedAt.toISOString() : null,
+      closingDate: r.closingDate ? r.closingDate.toISOString() : null,
+      isOpen: (r.contractStatus || '') === 'Abierto' || false,
+      awarded: r.awarded || false,
+      isExpired: computeDbExpired(r, source, now),
+      category: r.categoryCode || '',
+      duration: r.estimatedDuration || '',
+      modality: '',
+      source,
+    };
+  });
+
+  // Filtro estricto de municipio (elimina falsos positivos de entidad/descripción)
+  if (municipio) {
+    const munNorm = normalize(municipio);
+    results = results.filter((r: any) => {
+      const regionNorm = normalize(r.municipio || '');
+      const entityNorm = normalize(r.entity || '');
+      const regionReal = (r.municipio || '').toLowerCase();
+      const noDefinido = !r.municipio || /no definido|sin informaci/i.test(r.municipio || '');
+      const matchesRegion = regionNorm.includes(munNorm) || regionReal.includes(municipio.toLowerCase());
+      const matchesEntity = entityNorm.includes(munNorm);
+      if (!matchesRegion && !matchesEntity) return false;
+      if (!noDefinido && !matchesRegion && matchesEntity) return false;
+      return true;
+    });
+  }
+
+  // Sort estricto por fecha de publicación DESC (sin fecha al final)
+  results.sort((a: any, b: any) => {
+    const dateA = a.publishedAt ? new Date(a.publishedAt).getTime() : 0;
+    const dateB = b.publishedAt ? new Date(b.publishedAt).getTime() : 0;
+    if (!dateA && !dateB) return 0;
+    if (!dateA) return 1;
+    if (!dateB) return -1;
+    return dateB - dateA;
+  });
+
+  return { results: results.slice(0, 1000), total: results.length };
+}
+
+function computeDbExpired(r: any, source: string, now: Date): boolean {
+  const isSecop1 = source === 'secop_i_procesos' || source === 'secop_i_integrado' || source === 'secop_integrado';
+  if (r.closingDate && new Date(r.closingDate).getTime() < now.getTime()) return true;
+  const activeStates = ['Publicado', 'Convocado', 'Abierto', 'Presentación de oferta'];
+  if (!activeStates.includes(r.contractStatus || '')) return true;
+  if (r.publishedAt) {
+    const MAX_AGE_MS = isSecop1 ? 540 * 24 * 60 * 60 * 1000 : 90 * 24 * 60 * 60 * 1000;
+    if (now.getTime() - new Date(r.publishedAt).getTime() > MAX_AGE_MS) return true;
+  }
+  return false;
+}
 
 router.post('/api/trigger-scanner', requireApiKey, (req, res) => {
   const logger = req.app.locals.logger as Logger;
@@ -23,25 +160,54 @@ router.post('/api/trigger-scanner', requireApiKey, (req, res) => {
 });
 
 // Manual search - ad-hoc SECOP search without company filter
-router.post('/api/search', requireApiKey, async (req, res) => {
+router.post('/api/search', requireApiKey, validate(searchSchema), async (req, res) => {
+  const logger = (req.app.locals.logger as Logger) || console;
   const { unspscCodes, minBudget, maxBudget, department, municipio, status, searchText } = req.body;
+
+  // Clave estable para la caché (body normalizado)
+  const cacheKey = JSON.stringify([
+    unspscCodes ?? [],
+    minBudget ?? null,
+    maxBudget ?? null,
+    department ?? '',
+    municipio ?? '',
+    status ?? [],
+    searchText ?? '',
+  ]);
+  const cached = searchCache.get(cacheKey);
+  if (cached) {
+    return res.json(cached);
+  }
+
+  // Fase 1.5: búsqueda desde la DB enriquecida (ContractMatch ingerido) si está activa.
+  // Si no hay resultados o falla, se cae a SODA en vivo (fallback).
+  if (isSearchUseDb()) {
+    try {
+      const dbPayload = await searchEnrichedDb(req.body, logger);
+      if (dbPayload.results.length > 0) {
+        logger.info(`[SEARCH] ${dbPayload.total} resultados desde DB enriquecida`);
+        searchCache.set(cacheKey, dbPayload);
+        return res.json(dbPayload);
+      }
+      logger.info('[SEARCH] DB enriquecida sin resultados, fallback a SODA');
+    } catch (err: any) {
+      logger.error(`[SEARCH] DB search falló (${err?.message}), fallback a SODA`);
+    }
+  }
 
   const axios = (await import('axios')).default;
   const SODA_API_URL = process.env.SODA_API_URL || 'https://www.datos.gov.co/resource/p6dx-8zbt.json';
+  const SODA_APP_TOKEN = process.env.SOCRATA_APP_TOKEN || '';
+  // Cliente con App Token Socrata (aumenta el rate limit de datos.gov.co)
+  const sodaClient = axios.create({
+    timeout: parseInt(process.env.SODA_API_TIMEOUT || '120000', 10),
+    headers: SODA_APP_TOKEN ? { 'X-App-Token': SODA_APP_TOKEN } : {},
+  });
 
-  const normalize = (text: string): string => {
-    if (!text) return '';
-    return text
-      .toUpperCase()
-      .normalize('NFD')
-      .replace(/[\u0300-\u036f]/g, '')
-      .replace(/[^A-Z0-9\s]/g, ' ')
-      .replace(/\s+/g, ' ')
-      .trim();
-  };
-
-  const escapeSoql = (val: string): string => {
-    return val.replace(/'/g, "''");
+  // Fuentes SECOP I (Procesos f789-7hwg o Integrado rpmr-utcd): su estado no es una
+  // señal fiable de "abierto a ofertas" y su lag es mayor; la vigencia la decide isExpired.
+  const isSecop1Source = (c: any): boolean => {
+    return c._source === 'secop_i_procesos' || c._source === 'secop_i_integrado';
   };
 
   const statusFilter = status && status.length > 0
@@ -123,7 +289,7 @@ router.post('/api/search', requireApiKey, async (req, res) => {
       const qUrl = buildUrl(qParams);
       console.log(`[SODA] Query 1 ($q): ${qUrl.substring(0, 120)}`);
       
-      const qResponse = await axios.get(qUrl, {
+      const qResponse = await sodaClient.get(qUrl, {
         timeout: parseInt(process.env.SODA_API_TIMEOUT || '120000', 10),
       });
       const qResults = qResponse.data || [];
@@ -138,7 +304,7 @@ router.post('/api/search', requireApiKey, async (req, res) => {
       const wUrl = buildUrl(wParams);
       console.log(`[SODA] Query 2 ($q dept): ${wUrl.substring(0, 120)}`);
       
-      const wResponse = await axios.get(wUrl, {
+      const wResponse = await sodaClient.get(wUrl, {
         timeout: parseInt(process.env.SODA_API_TIMEOUT || '120000', 10),
       });
       const wResults = wResponse.data || [];
@@ -170,7 +336,7 @@ router.post('/api/search', requireApiKey, async (req, res) => {
           const secop1Url = buildUrl(secop1Params, SECOP1_PROCESSES_URL);
           console.log(`[SODA] Query 3 (SECOP I): ${secop1Url.substring(0, 150)}`);
           
-          const secop1Response = await axios.get(secop1Url, {
+          const secop1Response = await sodaClient.get(secop1Url, {
             timeout: parseInt(process.env.SODA_API_TIMEOUT || '120000', 10),
           });
           let secop1Results = secop1Response.data || [];
@@ -197,11 +363,11 @@ router.post('/api/search', requireApiKey, async (req, res) => {
               fase: 'Presentación de oferta',
               estado_de_apertura_del_proceso: 'Abierto',
               precio_base: c.cuantia_proceso || 0,
-              urlproceso: c.ruta_proceso_en_secop_i || { url: '' },
-              fecha_de_publicacion_del: c.fecha_de_cargue_en_el_secop || null,
-              _source: 'secop_integrado',
-              modalidad_de_contratacion: c.modalidad_de_contratacion || '',
-              tipo_de_contrato: c.tipo_de_contrato || '',
+               urlproceso: c.ruta_proceso_en_secop_i || { url: '' },
+               fecha_de_publicacion_del: c.fecha_de_cargue_en_el_secop || null,
+               _source: 'secop_i_procesos',
+               modalidad_de_contratacion: c.modalidad_de_contratacion || '',
+               tipo_de_contrato: c.tipo_de_contrato || '',
             }));
           console.log(`[SODA] SECOP I after filter: ${transformed.length}`);
           
@@ -227,7 +393,7 @@ router.post('/api/search', requireApiKey, async (req, res) => {
             };
             const integUrl = buildUrl(integParams, SECOP_INTEGRADO_URL);
             console.log(`[SODA] Query 3c (Integrado): ${integUrl.substring(0, 140)}`);
-            const integResponse = await axios.get(integUrl, {
+            const integResponse = await sodaClient.get(integUrl, {
               timeout: parseInt(process.env.SODA_API_TIMEOUT || '120000', 10),
             });
             const integResults = integResponse.data || [];
@@ -254,7 +420,7 @@ router.post('/api/search', requireApiKey, async (req, res) => {
                 precio_base: c.valor_contrato || 0,
                 urlproceso: { url: c.url_contrato || '' },
                 fecha_de_publicacion_del: pubDate,
-                _source: 'secop_integrado',
+                _source: 'secop_i_integrado',
                 modalidad_de_contratacion: c.modalidad_de_contrataci_n || '',
                 tipo_de_contrato: c.tipo_de_contrato || '',
               };
@@ -283,7 +449,7 @@ router.post('/api/search', requireApiKey, async (req, res) => {
       const fullUrl = `${SODA_API_URL}?${queryParts.join('&')}`;
       console.log(`[SODA] URL: ${fullUrl.substring(0, 120)}`);
       
-      const response = await axios.get(fullUrl, {
+      const response = await sodaClient.get(fullUrl, {
         timeout: parseInt(process.env.SODA_API_TIMEOUT || '120000', 10),
       });
       results = response.data;
@@ -299,7 +465,7 @@ router.post('/api/search', requireApiKey, async (req, res) => {
       // Status filter - for SECOP I records the status is not a reliable
       // "open to offers" signal; isExpired handles vigencia. For SECOP II,
       // keep only known process states.
-      if (c._source !== 'secop_integrado' && !statusList.includes(c.estado_del_procedimiento)) return false;
+      if (!isSecop1Source(c) && !statusList.includes(c.estado_del_procedimiento)) return false;
     
       // Budget filters
       if (minBudget !== undefined && (parseFloat(c.precio_base) || 0) < parseFloat(minBudget)) return false;
@@ -413,8 +579,7 @@ router.post('/api/search', requireApiKey, async (req, res) => {
       //    effectively expired. SECOP I (Integrado) has a longer lag, so give
       //    its "Convocado" processes a wider window.
       if (c.fecha_de_publicacion_del) {
-        const isSecop1 = c._source === 'secop_integrado';
-        const MAX_AGE_MS = isSecop1 ? 540 * 24 * 60 * 60 * 1000 : 90 * 24 * 60 * 60 * 1000;
+        const MAX_AGE_MS = isSecop1Source(c) ? 540 * 24 * 60 * 60 * 1000 : 90 * 24 * 60 * 60 * 1000;
         if (now.getTime() - new Date(c.fecha_de_publicacion_del).getTime() > MAX_AGE_MS) {
           return true;
         }
@@ -427,7 +592,7 @@ router.post('/api/search', requireApiKey, async (req, res) => {
     // The results are already sorted strictly by publication date DESC above.
     // No further re-sorting is applied to preserve the newest-first order.
 
-    res.json({
+    const payload = {
       results: results.slice(0, 1000).map((c: any) => ({
         secopId: c.id_del_proceso,
         entity: c.entidad,
@@ -449,37 +614,16 @@ router.post('/api/search', requireApiKey, async (req, res) => {
                     null,
         isOpen: c.estado_de_apertura_del_proceso === 'Abierto' || false,
         awarded: c.adjudicado === 'Si' || false,
-        isExpired: (() => {
-          const realClose = c.fecha_de_recepcion_de || 
-                            c.fecha_de_presentacion_de_la_oferta || 
-                            c.fecha_fin_procedimiento ||
-                            c.fecha_limite_presentacion;
-          if (realClose) {
-            return new Date(realClose).getTime() < Date.now();
-          }
-          const activeStates = ['Publicado', 'Convocado', 'Abierto', 'Presentación de oferta'];
-          if (!activeStates.includes(c.estado_del_procedimiento)) {
-            return true;
-          }
-          if (c.estado_de_apertura_del_proceso !== 'Abierto') {
-            return true;
-          }
-          if (c.fecha_de_publicacion_del) {
-            const isSecop1 = c._source === 'secop_integrado';
-            const MAX_AGE_MS = isSecop1 ? 540 * 24 * 60 * 60 * 1000 : 90 * 24 * 60 * 60 * 1000;
-            if (Date.now() - new Date(c.fecha_de_publicacion_del).getTime() > MAX_AGE_MS) {
-              return true;
-            }
-          }
-          return false;
-        })(),
+        isExpired: isExpiredFn(c),
         category: c.codigo_principal_de_categoria || '',
         duration: `${c.duracion || ''} ${c.unidad_de_duracion || ''}`.trim(),
         modality: c.modalidad_de_contratacion || '',
         source: c._source || 'secop_ii',
       })),
       total: results.length,
-    });
+    };
+    searchCache.set(cacheKey, payload);
+    res.json(payload);
   } catch (error: any) {
     // Detect SODA rate limiting / server errors
     const status = error?.response?.status;

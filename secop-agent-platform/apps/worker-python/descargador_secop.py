@@ -11,7 +11,15 @@ try:
 except ImportError:
     PLAYWRIGHT_AVAILABLE = False
 
+_PLAYWRIGHT_INSTANCE = None
 _BROWSER_INSTANCE = None
+
+def _get_playwright():
+    """Retorna la instancia persistente de Playwright (NO usar `with` para no cerrar los browsers)."""
+    global _PLAYWRIGHT_INSTANCE
+    if _PLAYWRIGHT_INSTANCE is None:
+        _PLAYWRIGHT_INSTANCE = sync_playwright().start()
+    return _PLAYWRIGHT_INSTANCE
 
 class DescargadorSECOP:
     def __init__(self, download_dir: str = "./documentos/pdf_crudos", timeout: int = 60000, reuse_browser: bool = True):
@@ -56,63 +64,63 @@ class DescargadorSECOP:
 
         browser = None
         try:
-            with sync_playwright() as p:
-                browser = self._get_browser(p)
-                context = browser.new_context(accept_downloads=True)
-                page = context.new_page()
-                page.set_default_timeout(self.timeout)
+            p = _get_playwright()
+            browser = self._get_browser(p)
+            context = browser.new_context(accept_downloads=True)
+            page = context.new_page()
+            page.set_default_timeout(self.timeout)
 
-                page.goto(url_proceso, wait_until="domcontentloaded")
-                print("[*] Buscando documentos...")
+            page.goto(url_proceso, wait_until="domcontentloaded")
+            print("[*] Buscando documentos...")
 
-                selectores_seccion = [
-                    "text='Documentos'", "text=Documentos del Proceso",
-                    "a:has-text('Documentos')", "button:has-text('Documentos')",
-                    "text=Anexos", "text=Documentación",
-                ]
-                for sel in selectores_seccion:
-                    try:
-                        page.wait_for_selector(sel, timeout=10000)
+            selectores_seccion = [
+                "text='Documentos'", "text=Documentos del Proceso",
+                "a:has-text('Documentos')", "button:has-text('Documentos')",
+                "text=Anexos", "text=Documentación",
+            ]
+            for sel in selectores_seccion:
+                try:
+                    page.wait_for_selector(sel, timeout=10000)
+                    break
+                except PWTimeoutError:
+                    continue
+
+            patrones_pliego = [
+                "Pliego de Condiciones Definitivo", "Proyecto de Pliego",
+                "Pliego de Condiciones", "Pliego Definitivo", "Pliego",
+            ]
+            pliego_element = None
+            for patron in patrones_pliego:
+                for tipo in [f"tr:has-text('{patron}')", f"a:has-text('{patron}')"]:
+                    elemento = page.locator(tipo)
+                    if elemento.count() > 0:
+                        pliego_element = elemento
                         break
-                    except PWTimeoutError:
-                        continue
+                if pliego_element:
+                    break
 
-                patrones_pliego = [
-                    "Pliego de Condiciones Definitivo", "Proyecto de Pliego",
-                    "Pliego de Condiciones", "Pliego Definitivo", "Pliego",
-                ]
-                pliego_element = None
-                for patron in patrones_pliego:
-                    for tipo in [f"tr:has-text('{patron}')", f"a:has-text('{patron}')"]:
-                        elemento = page.locator(tipo)
-                        if elemento.count() > 0:
-                            pliego_element = elemento
-                            break
-                    if pliego_element:
-                        break
+            if pliego_element is None or pliego_element.count() == 0:
+                print("[!] No se encontró el pliego")
+                return None
 
-                if pliego_element is None or pliego_element.count() == 0:
-                    print("[!] No se encontró el pliego")
-                    return None
+            btn = pliego_element.locator(
+                "a[title*='Descargar'], input[type='submit'][value*='Descargar'], "
+                "a:has-text('Descargar'), button:has-text('Descargar'), "
+                "a.download, button.download, a[href*='download'], a[href*='Descargar']"
+            )
+            if btn.count() == 0:
+                btn = pliego_element.locator("a, button")
 
-                btn = pliego_element.locator(
-                    "a[title*='Descargar'], input[type='submit'][value*='Descargar'], "
-                    "a:has-text('Descargar'), button:has-text('Descargar'), "
-                    "a.download, button.download, a[href*='download'], a[href*='Descargar']"
-                )
-                if btn.count() == 0:
-                    btn = pliego_element.locator("a, button")
-
-                if btn.count() > 0:
-                    with page.expect_download() as download_info:
-                        btn.first.click()
-                    download = download_info.value
-                    download.save_as(pdf_path)
-                    print(f"[*] PDF guardado: {pdf_path}")
-                    return pdf_path
-                else:
-                    print("[!] Sin botón de descarga")
-                    return None
+            if btn.count() > 0:
+                with page.expect_download() as download_info:
+                    btn.first.click()
+                download = download_info.value
+                download.save_as(pdf_path)
+                print(f"[*] PDF guardado: {pdf_path}")
+                return pdf_path
+            else:
+                print("[!] Sin botón de descarga")
+                return None
 
         except Exception as e:
             print(f"[!] Error: {e}")
@@ -126,13 +134,19 @@ class DescargadorSECOP:
 
 
 def cleanup_browsers():
-    global _BROWSER_INSTANCE
+    global _BROWSER_INSTANCE, _PLAYWRIGHT_INSTANCE
     if _BROWSER_INSTANCE is not None:
         try:
             _BROWSER_INSTANCE.close()
         except Exception:
             pass
         _BROWSER_INSTANCE = None
+    if _PLAYWRIGHT_INSTANCE is not None:
+        try:
+            _PLAYWRIGHT_INSTANCE.stop()
+        except Exception:
+            pass
+        _PLAYWRIGHT_INSTANCE = None
 
 signal.signal(signal.SIGTERM, lambda *_: cleanup_browsers())
 signal.signal(signal.SIGINT, lambda *_: (cleanup_browsers(), sys.exit(0)))
