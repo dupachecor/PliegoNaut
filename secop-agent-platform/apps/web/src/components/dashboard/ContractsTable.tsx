@@ -9,6 +9,7 @@ import { formatCurrency } from "@/lib/utils";
 import { ExternalLink, FileSearch, Eye, Calendar, MapPin, TrendingUp, Clock, Route } from "lucide-react";
 import type { ContractMatch } from "@pliegonaut/types";
 import { ContractDetailsModal } from "./ContractDetailsModal";
+import { PliegoButton } from "./PliegoButton";
 
 interface Props {
   contracts: ContractMatch[];
@@ -124,6 +125,7 @@ export function ContractsTable({ contracts, isLoading, onSelectContract }: Props
                         Ruta
                       </Button>
                     )}
+                    <PliegoButton secopId={contract.secopId} />
                     <a href={contract.urlPliego} target="_blank" rel="noreferrer">
                       <Button variant="ghost" size="sm" className="h-8 w-8 p-0 text-muted-foreground hover:text-primary">
                         <ExternalLink className="h-4 w-4" />

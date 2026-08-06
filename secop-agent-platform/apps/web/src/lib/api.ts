@@ -94,3 +94,52 @@ export function updateCompany(id: string, data: Partial<Company>) {
 export function deleteCompany(id: string) {
   return request<void>(`/api/companies/${id}`, { method: "DELETE" });
 }
+
+// ===== Documentos (Fase 2.4/2.5) =====
+
+// Forma exacta que devuelve GET /api/contracts/:secopId/documents
+export interface ProcessDocumentListItem {
+  id: string;
+  documentType: string;
+  fileName: string;
+  sizeBytes: number | null;
+  checksum: string | null;
+  fetchedAt: string;
+  downloadUrl: string;
+}
+
+export interface DocumentListResponse {
+  secopId: string;
+  vortalNoticeUid: string | null;
+  documents: ProcessDocumentListItem[];
+}
+
+export function fetchDocuments(secopId: string) {
+  return request<DocumentListResponse>(`/api/contracts/${encodeURIComponent(secopId)}/documents`);
+}
+
+// Descarga el PDF (con auth Bearer) y lo abre en una pestaña nueva vía blob URL.
+export async function openDocument(secopId: string, docId: string, fileName: string): Promise<void> {
+  if (!API_KEY) {
+    throw new Error("NEXT_PUBLIC_API_KEY no está configurada en el frontend");
+  }
+  const res = await fetch(
+    `${API_URL}/api/contracts/${encodeURIComponent(secopId)}/documents/${docId}/download`,
+    { headers: { Authorization: `Bearer ${API_KEY}` } },
+  );
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({ error: res.statusText }));
+    throw new Error(body.error || `Error ${res.status}`);
+  }
+  const blob = await res.blob();
+  const url = URL.createObjectURL(blob);
+  const win = window.open(url, "_blank");
+  if (!win) {
+    // popup bloqueado: descarga directa
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = fileName;
+    a.click();
+  }
+  setTimeout(() => URL.revokeObjectURL(url), 60000);
+}

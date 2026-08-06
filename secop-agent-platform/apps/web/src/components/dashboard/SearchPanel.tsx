@@ -20,6 +20,7 @@ import {
   AlertCircle,
 } from "lucide-react";
 import { formatCurrency } from "@/lib/utils";
+import { PliegoButton } from "./PliegoButton";
 
 // SECOP I (Procesos f789-7hwg o Integrado rpmr-utcd): no expone fechas de cierre fiables;
 // el estado y la modalidad se muestran de forma distinta a SECOP II.
@@ -295,15 +296,18 @@ export function SearchPanel({ companies, selectedCompanyId, onSelectCompany }: P
                       <div className="text-right shrink-0">
                         <p className="text-sm font-semibold text-primary">{formatCurrency(r.budget)}</p>
                         <p className="text-xs text-muted-foreground mt-0.5">{r.duration}</p>
-                        <a
-                          href={r.urlPliego}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          className="inline-flex items-center gap-1 text-xs text-primary hover:underline mt-2"
-                        >
-                          Ver en SECOP
-                          <ExternalLink className="w-3 h-3" />
-                        </a>
+                        <div className="flex items-center justify-end gap-2 mt-2">
+                          <PliegoButton secopId={r.secopId} />
+                          <a
+                            href={r.urlPliego}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="inline-flex items-center gap-1 text-xs text-primary hover:underline"
+                          >
+                            Ver en SECOP
+                            <ExternalLink className="w-3 h-3" />
+                          </a>
+                        </div>
                       </div>
                     </div>
                   </CardContent>

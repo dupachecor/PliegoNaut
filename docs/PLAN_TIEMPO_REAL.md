@@ -351,6 +351,13 @@ model ScrapeSession {
 | GET | `/api/contracts/:secopId/documents` | Lista de pliegos disponibles |
 | GET | `/api/contracts/:secopId/documents/:docId/download` | Streaming del PDF |
 
+> **Estado de implementación (2026-08-06):** ✅ implementado y verificado en vivo.
+> - `apps/api/src/routes/documents.ts` — busca el proceso por `secopId` **o** `vortalNoticeUid`, lista sus
+>   `ProcessDocument` (metadatos, sin el binario), y descarga con `res.sendFile` (streaming + Content-Length +
+>   `Content-Disposition` RFC 5987 para acentos).
+> - Verificado contra datos reales (proceso CO1.NTC.10281722, 11 docs): lista 200 con metadatos, download 200
+>   con PDF válido, 401 sin API Key, 404 si no existe. Tests: `__tests__/documents.test.ts` (6).
+
 **Archivos:**
 - `apps/api/src/routes/documents.ts` (nuevo)
 - Modificar `apps/api/src/index.ts` para registrar la ruta
@@ -363,6 +370,16 @@ model ScrapeSession {
 ### 2.5 Sub-fase: Frontend — botón "Ver pliego"
 
 **Qué:** En cada tarjeta de contrato, agregar boton que abre/descarga el pliego.
+
+> **Estado de implementación (2026-08-06):** ✅ implementado.
+> - `apps/web/src/components/dashboard/PliegoButton.tsx` — componente reutilizable y lazy:
+>   - carga la lista de documentos al primer click; **sin documentos no se renderiza**;
+>   - 1 documento → lo abre directo; varios (pliego/addendos/avisos) → dropdown para elegir;
+>   - loading state mientras consulta/descarga.
+> - `apps/web/src/lib/api.ts` — `fetchDocuments(secopId)` y `openDocument(secopId, docId, fileName)`
+>   (descarga con auth Bearer y abre vía blob URL; si el popup se bloquea, descarga directa).
+> - Integrado en `SearchPanel.tsx` (cada tarjeta de resultado) y en `ContractsTable.tsx` (cada fila persistida).
+> - Tests: `apps/web/src/lib/__tests__/api.test.ts` (2).
 
 **Archivos:**
 - `apps/web/src/components/dashboard/SearchPanel.tsx` (modificar)

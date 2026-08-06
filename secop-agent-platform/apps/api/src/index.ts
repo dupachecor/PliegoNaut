@@ -20,6 +20,7 @@ import companiesRoutes from './routes/companies';
 import contractsRoutes from './routes/contracts';
 import scannerRoutes from './routes/scanner';
 import workerRoutes from './routes/worker';
+import documentsRoutes from './routes/documents';
 
 const logger = createLogger('pliegonaut-api');
 
@@ -54,6 +55,7 @@ app.use(companiesRoutes);
 app.use(contractsRoutes);
 app.use(scannerRoutes);
 app.use(workerRoutes);
+app.use(documentsRoutes);
 
 // Cron de ingestión incremental SECOP II (Fase 1.1)
 startSodaIngestCron();
