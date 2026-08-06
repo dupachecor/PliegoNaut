@@ -19,7 +19,7 @@ interface Props {
 /**
  * Botón "Ver pliego" (Fase 2.5).
  * - Carga la lista de documentos bajo demanda (lazy) al primer click.
- * - Sin documentos → no se renderiza.
+ * - Sin documentos → estado deshabilitado con tooltip (NO desaparece).
  * - Un documento → lo abre directamente.
  * - Varios (pliego, addendos, avisos) → dropdown para elegir.
  */
@@ -27,15 +27,18 @@ export function PliegoButton({ secopId, size = "sm" }: Props) {
   const [docs, setDocs] = useState<ProcessDocumentListItem[] | null>(null);
   const [loading, setLoading] = useState(false);
   const [opening, setOpening] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     if (docs !== null || loading) return;
     setLoading(true);
+    setError(null);
     try {
       const res = await fetchDocuments(secopId);
       setDocs(res.documents ?? []);
-    } catch {
+    } catch (err: any) {
       setDocs([]);
+      setError(err?.message || "No se pudieron cargar los documentos");
     } finally {
       setLoading(false);
     }
@@ -73,8 +76,21 @@ export function PliegoButton({ secopId, size = "sm" }: Props) {
     );
   }
 
-  // Sin documentos → oculto
-  if (docs.length === 0) return null;
+  // Sin documentos o error → estado deshabilitado con tooltip (no desaparece silenciosamente)
+  if (docs.length === 0) {
+    return (
+      <Button
+        variant="outline"
+        size={size}
+        disabled
+        title={error || "Este proceso no tiene documentos disponibles"}
+        className="h-8 text-xs flex items-center gap-1.5 text-muted-foreground opacity-60 cursor-not-allowed border-border"
+      >
+        <FileText className="h-3.5 w-3.5" />
+        {error ? "No disponible" : "Sin pliego"}
+      </Button>
+    );
+  }
 
   // Un solo documento → abrir directo
   if (docs.length === 1) {
