@@ -4,6 +4,37 @@
 
 PliegoNaut automatiza el ciclo completo de identificacion, descarga, analisis y scoring de Pliegos de Condiciones del SECOP. Combina un escaner de contratos publicos que consulta tanto SECOP II (via SODA API de datos.gov.co) como SECOP I (Alcaldias y entidades que publican en contratos.gov.co), con un pipeline de agentes de IA (CrewAI) que simula un equipo de analistas juridicos y financieros, emitiendo un veredicto estructurado y un puntaje de viabilidad para cada licitacion.
 
+---
+
+## Impact
+
+**PliegoNaut levels the playing field in Colombian public procurement.**
+
+Colombia's state contracts — billions of dollars a year through SECOP I and
+SECOP II — are technically open data, but they are not *accessible*. Tender
+documents run hundreds of pages, the official APIs lag ~24h behind reality,
+and only companies with legal and financial teams can afford to analyze them.
+PyMEs, the majority of Colombian businesses, are effectively excluded.
+
+This project turns that public data into equal opportunity:
+
+- **Detect** — scans SECOP II, SECOP I (municipalities) and VORTAL (the
+  real-time transactional platform), with incremental ingestion, watermarking,
+  cross-source dedup and award enrichment (~4,600 tender records in the
+  reference database).
+- **Download** — fetches the official tender PDFs automatically (pliego,
+  addenda, notices).
+- **Analyze** — a CrewAI pipeline (legal analyst → financial analyst → judge)
+  produces a structured verdict: viability score 0-100, findings with cited
+  pages, rejection causes, and a step-by-step submission route with deadlines.
+- **Decide** — a dashboard tells a business owner, per tender: *"can my
+  company win this, why, and what do I do next."*
+
+Production-oriented monorepo (Next.js 15 + Express + PostgreSQL/Prisma +
+Python/CrewAI + Docker) with **107 automated API tests** and a documented
+roadmap for real-time data access and legal-risk analysis of the scraping
+strategy (`docs/PLAN_TIEMPO_REAL.md`, `docs/SCRAPER_RISK.md`).
+
 > **Estado actual de la fuente de datos:** los datasets publicos de datos.gov.co (Socrata) se actualizan una vez al dia (batch ETL de Colombia Compra Eficiente), con un retraso inherente de ~24h entre publicacion en SECOP y disponibilidad en la API. Ver `docs/PLAN_TIEMPO_REAL.md` para el roadmap de mitigacion (pulls incrementales + scraping VORTAL + acuerdo comercial CCE).
 
 ---
